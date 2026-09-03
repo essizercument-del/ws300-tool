@@ -203,12 +203,12 @@ const SVC_DATA    = "90829600" + BASE;
 
 // eksen haritası: karakteristik -> {axis, role}
 const CHAR_MAP = {
-  "90829601"+BASE: {axis:'Z', role:'data'},
-  "90829603"+BASE: {axis:'Z', role:'count'},
-  "90829604"+BASE: {axis:'X', role:'data'},
-  "90829605"+BASE: {axis:'X', role:'count'},
-  "90829606"+BASE: {axis:'Y', role:'data'},
-  "90829607"+BASE: {axis:'Y', role:'count'},
+  ["90829601"+BASE]: {axis:'Z', role:'data'},
+  ["90829603"+BASE]: {axis:'Z', role:'count'},
+  ["90829604"+BASE]: {axis:'X', role:'data'},
+  ["90829605"+BASE]: {axis:'X', role:'count'},
+  ["90829606"+BASE]: {axis:'Y', role:'data'},
+  ["90829607"+BASE]: {axis:'Y', role:'count'},
 };
 
 const CONFIG_BYTES  = new Uint8Array([0,1,4,0,0,50,0,0]);

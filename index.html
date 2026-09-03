@@ -366,7 +366,7 @@ function onNotify(event){
   const uuid = event.target.uuid;
   const info = CHAR_MAP[uuid];
   if(!info) return;
-  const dv = event.value; // DataView
+  const dv = event.target.value; // DataView
 
   if(info.role === 'count'){
     // tek byte, unsigned 0-255 = son sequence index

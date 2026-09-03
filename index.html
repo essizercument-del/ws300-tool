@@ -2,60 +2,574 @@
 <html lang="tr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WS300 Tanı Sayfası</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>WS300 Titreşim Analiz — Faz 1</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js" defer></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  body{ background:#0a0d0b; color:#d9e4dc; font-family:sans-serif; padding:20px; font-size:16px; }
-  h1{ font-size:18px; }
-  button{ font-size:18px; padding:16px 24px; border-radius:10px; border:none; background:#3dffa0; color:#04120a; font-weight:bold; margin:10px 0; display:block; width:100%; }
-  #out{ background:#000; border:1px solid #333; border-radius:8px; padding:12px; margin-top:16px; white-space:pre-wrap; word-break:break-word; font-family:monospace; font-size:13px; min-height:200px; }
-  .ok{ color:#3dffa0; }
-  .err{ color:#ff5d5d; }
-  .info{ color:#ffb238; }
+  :root{
+    --bg:#0a0d0b;
+    --panel:#121713;
+    --panel-2:#171d19;
+    --line:#26302a;
+    --phosphor:#3dffa0;
+    --phosphor-dim:#1f8a5c;
+    --amber:#ffb238;
+    --red:#ff5d5d;
+    --text:#d9e4dc;
+    --text-dim:#7c8a80;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;-webkit-tap-highlight-color:transparent;}
+  body{padding-bottom:40px;}
+
+  .scan{
+    position:fixed; inset:0; pointer-events:none; z-index:50; opacity:.035;
+    background:repeating-linear-gradient(0deg, #fff 0px, transparent 1px, transparent 2px);
+  }
+
+  header{
+    padding:22px 18px 14px;
+    border-bottom:1px solid var(--line);
+    display:flex; flex-direction:column; gap:4px;
+  }
+  .eyebrow{
+    font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.14em;
+    color:var(--phosphor-dim); text-transform:uppercase;
+  }
+  h1{ margin:0; font-size:20px; font-weight:700; letter-spacing:-0.01em; }
+  .sub{ font-size:12.5px; color:var(--text-dim); }
+
+  .status-bar{
+    display:flex; align-items:center; gap:8px;
+    margin:14px 18px 0; padding:10px 12px;
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    font-family:'JetBrains Mono',monospace; font-size:12px;
+  }
+  .dot{ width:8px; height:8px; border-radius:50%; background:var(--text-dim); flex-shrink:0; }
+  .dot.on{ background:var(--phosphor); box-shadow:0 0 8px var(--phosphor); }
+  .dot.busy{ background:var(--amber); box-shadow:0 0 8px var(--amber); animation:pulse 1s infinite; }
+  .dot.err{ background:var(--red); box-shadow:0 0 8px var(--red); }
+  @keyframes pulse{ 50%{opacity:.3;} }
+  #statusText{ color:var(--text); flex:1; }
+
+  .controls{
+    display:flex; gap:10px; margin:14px 18px 0; flex-wrap:wrap;
+  }
+  button{
+    font-family:'Inter',sans-serif; font-weight:600; font-size:14px;
+    padding:13px 20px; border-radius:10px; border:1px solid var(--line);
+    background:var(--panel-2); color:var(--text); cursor:pointer;
+    transition:border-color .15s, transform .05s;
+  }
+  button:active{ transform:scale(.98); }
+  button:disabled{ opacity:.35; cursor:not-allowed; }
+  button.primary{ background:var(--phosphor); color:#04120a; border-color:var(--phosphor); }
+  button.primary:disabled{ background:var(--panel-2); color:var(--text-dim); border-color:var(--line); }
+  button.ghost:hover:not(:disabled){ border-color:var(--phosphor-dim); }
+
+  .progress-wrap{
+    margin:14px 18px 0; height:6px; border-radius:3px; background:var(--panel);
+    border:1px solid var(--line); overflow:hidden; display:none;
+  }
+  .progress-wrap.show{ display:block; }
+  .progress-bar{ height:100%; width:0%; background:linear-gradient(90deg,var(--phosphor-dim),var(--phosphor)); transition:width .15s; }
+
+  .readouts{
+    display:grid; grid-template-columns:repeat(3,1fr); gap:8px;
+    margin:16px 18px 0;
+  }
+  .axis-card{
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:12px 10px; text-align:center;
+  }
+  .axis-card .axis-label{
+    font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.1em;
+    color:var(--text-dim); margin-bottom:6px;
+  }
+  .axis-card.x .axis-label{ color:#ff6b6b; }
+  .axis-card.y .axis-label{ color:#5ec8ff; }
+  .axis-card.z .axis-label{ color:var(--phosphor); }
+  .axis-card .rms{ font-family:'JetBrains Mono',monospace; font-size:19px; font-weight:700; }
+  .axis-card .rms-unit{ font-size:10px; color:var(--text-dim); }
+  .axis-card .pk{ font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text-dim); margin-top:3px; }
+
+  .panel{
+    margin:16px 18px 0; background:var(--panel); border:1px solid var(--line);
+    border-radius:12px; padding:14px 12px 6px;
+  }
+  .panel-title{
+    font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--text-dim); margin-bottom:10px; display:flex; justify-content:space-between;
+  }
+  .panel-title span.tag{ color:var(--phosphor-dim); }
+  canvas{ width:100% !important; }
+
+  .log{
+    margin:16px 18px 0; background:#000; border:1px solid var(--line); border-radius:10px;
+    padding:10px 12px; font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--phosphor-dim);
+    max-height:130px; overflow-y:auto; line-height:1.6;
+  }
+  .log div{ white-space:pre-wrap; word-break:break-all; }
+  .log .warn{ color:var(--amber); }
+  .log .err{ color:var(--red); }
+
+  footer{
+    margin:24px 18px 0; font-size:11px; color:var(--text-dim); text-align:center;
+    font-family:'JetBrains Mono',monospace;
+  }
 </style>
 </head>
 <body>
-<h1>WS300 Tanı Sayfası (harici kaynak yok)</h1>
-<button id="btn">1) Test Et — Cihaza Bağlan</button>
-<div id="out">Sayfa yüklendi, bekleniyor…</div>
+<div class="scan"></div>
+
+<header>
+  <div class="eyebrow">CTC WS300 · BLE Titreşim Analiz</div>
+  <h1>WS300 Analiz — Faz 1</h1>
+  <div class="sub">Bağlan → tetikle → ham ivme verisi + G²/Hz PSD</div>
+</header>
+
+<div class="status-bar">
+  <div class="dot" id="statusDot"></div>
+  <div id="statusText">Cihaza bağlı değil</div>
+</div>
+
+<div class="controls">
+  <button class="primary" id="btnConnect">Cihaza Bağlan</button>
+  <button class="ghost" id="btnMeasure" disabled>Ölçüm Al</button>
+  <button class="ghost" id="btnExport" disabled>CSV İndir</button>
+</div>
+
+<div class="progress-wrap" id="progressWrap">
+  <div class="progress-bar" id="progressBar"></div>
+</div>
+
+<div class="readouts">
+  <div class="axis-card x">
+    <div class="axis-label">X EKSENİ</div>
+    <div class="rms" id="rmsX">—</div>
+    <div class="rms-unit">g RMS</div>
+    <div class="pk" id="pkX">tepe: —</div>
+  </div>
+  <div class="axis-card y">
+    <div class="axis-label">Y EKSENİ</div>
+    <div class="rms" id="rmsY">—</div>
+    <div class="rms-unit">g RMS</div>
+    <div class="pk" id="pkY">tepe: —</div>
+  </div>
+  <div class="axis-card z">
+    <div class="axis-label">Z EKSENİ</div>
+    <div class="rms" id="rmsZ">—</div>
+    <div class="rms-unit">g RMS</div>
+    <div class="pk" id="pkZ">tepe: —</div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-title">Zaman Domeni <span class="tag">g vs ms</span></div>
+  <canvas id="chartTime" height="220"></canvas>
+</div>
+
+<div class="panel">
+  <div class="panel-title">Güç Spektral Yoğunluğu <span class="tag">G²/Hz vs Hz</span></div>
+  <canvas id="chartPSD" height="220"></canvas>
+</div>
+
+<div class="log" id="log"></div>
+
+<footer>testigotr.com.tr — WS300 saha aracı — Faz 1 (RPM / rulman katmanı Faz 2'de)</footer>
 
 <script>
-// Bu sayfa hiçbir CDN/harici kaynak kullanmıyor — tamamen tek dosya.
-// Amaç: ana WS300 aracında sorun harici kaynak (Chart.js/Google Fonts)
-// engellenmesinden mi kaynaklanıyor, yoksa Web Bluetooth'un kendisi mi
-// çalışmıyor, bunu ayırt etmek.
+// ============================================================
+// WS300 BLE PROTOKOLÜ (APK decompile ile doğrulandı)
+// ============================================================
+const BASE = "-5b49-42cb-9683-3a68b834786f";
+const SVC_CONFIG  = "90829500" + BASE;
+const CHR_CONFIG  = "90829501" + BASE;
+const SVC_TRIGGER = "90829700" + BASE;
+const CHR_TRIGGER = "90829703" + BASE;
+const SVC_DATA    = "90829600" + BASE;
 
-const out = document.getElementById('out');
-function p(msg, cls){
+// eksen haritası: karakteristik -> {axis, role}
+const CHAR_MAP = {
+  "90829601"+BASE: {axis:'Z', role:'data'},
+  "90829603"+BASE: {axis:'Z', role:'count'},
+  "90829604"+BASE: {axis:'X', role:'data'},
+  "90829605"+BASE: {axis:'X', role:'count'},
+  "90829606"+BASE: {axis:'Y', role:'data'},
+  "90829607"+BASE: {axis:'Y', role:'count'},
+};
+
+const CONFIG_BYTES  = new Uint8Array([0,1,4,0,0,50,0,0]);
+const TRIGGER_BYTES = new Uint8Array([1]);
+const SCALE_G_PER_LSB = 0.0006104; // g/bit, uygulamanın kendi server-upload JSON'undan doğrulandı
+const SAMPLE_RATE_HZ = 12800;
+
+// ============================================================
+// STATE
+// ============================================================
+let device=null, server=null;
+let axisBuffers = { X:[], Y:[], Z:[] };   // her biri {seq, bytes}
+let axisExpectedCount = { X:null, Y:null, Z:null };
+let axisSamples = { X:null, Y:null, Z:null }; // Float32Array g değerleri
+let measuring = false;
+let charts = {time:null, psd:null};
+
+// ============================================================
+// LOG / STATUS UI
+// ============================================================
+function log(msg, cls){
+  const el = document.getElementById('log');
   const d = document.createElement('div');
   if(cls) d.className = cls;
-  d.textContent = msg;
-  out.appendChild(d);
+  const t = new Date().toLocaleTimeString('tr-TR', {hour12:false});
+  d.textContent = `[${t}] ${msg}`;
+  el.appendChild(d);
+  el.scrollTop = el.scrollHeight;
+}
+function setStatus(text, mode){
+  document.getElementById('statusText').textContent = text;
+  const dot = document.getElementById('statusDot');
+  dot.className = 'dot' + (mode ? ' '+mode : '');
+}
+function setProgress(pct){
+  const wrap = document.getElementById('progressWrap');
+  const bar = document.getElementById('progressBar');
+  if(pct===null){ wrap.classList.remove('show'); bar.style.width='0%'; return; }
+  wrap.classList.add('show');
+  bar.style.width = pct+'%';
 }
 
-p('JavaScript çalışıyor ✓', 'ok');
-p('navigator.bluetooth mevcut mu: ' + (!!navigator.bluetooth), navigator.bluetooth ? 'ok' : 'err');
-p('Sayfa protokolü: ' + location.protocol, location.protocol==='https:' ? 'ok' : 'err');
-
-document.getElementById('btn').addEventListener('click', async function(){
-  p('--- Butona basıldı ---', 'info');
-  try{
-    if(!navigator.bluetooth){
-      p('HATA: navigator.bluetooth tanımsız. Bu tarayıcı/ortam Web Bluetooth desteklemiyor.', 'err');
-      alert('navigator.bluetooth tanımsız!');
-      return;
-    }
-    p('requestDevice çağrılıyor…', 'info');
-    const device = await navigator.bluetooth.requestDevice({
-      acceptAllDevices: true
-    });
-    p('BAŞARILI! Seçilen cihaz: ' + device.name, 'ok');
-    alert('Başarılı: ' + device.name);
-  }catch(err){
-    p('HATA YAKALANDI: ' + err.name + ' — ' + err.message, 'err');
-    alert('Hata: ' + err.name + ': ' + err.message);
+// Cihaz, snoop log'da doğrulandığı üzere config/trigger yazımlarında
+// ATT "Write Command" (0x52, response beklemeyen) kullanıyor.
+// Tarayıcı destekliyorsa aynısını tercih ediyoruz; desteklemiyorsa
+// response bekleyen yazıma düşüyoruz (çoğu firmware ikisini de kabul eder).
+async function writeCharacteristic(characteristic, bytes){
+  if(characteristic.writeValueWithoutResponse){
+    await characteristic.writeValueWithoutResponse(bytes);
+  } else {
+    await characteristic.writeValue(bytes);
   }
-});
+}
+
+// ============================================================
+// BLE BAĞLANTI
+// ============================================================
+document.getElementById('btnConnect').addEventListener('click', connectDevice);
+document.getElementById('btnMeasure').addEventListener('click', runMeasurement);
+document.getElementById('btnExport').addEventListener('click', exportCSV);
+
+async function connectDevice(){
+  if(!navigator.bluetooth){
+    log('Bu tarayıcı Web Bluetooth desteklemiyor. Chrome/Android kullanın.', 'err');
+    setStatus('Web Bluetooth desteklenmiyor', 'err');
+    return;
+  }
+  try{
+    setStatus('Cihaz seçiliyor…', 'busy');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SVC_DATA] }],
+      optionalServices: [SVC_CONFIG, SVC_TRIGGER, SVC_DATA]
+    });
+    log(`Seçildi: ${device.name || '(isimsiz)'}`);
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+
+    setStatus('Bağlanıyor…', 'busy');
+    server = await device.gatt.connect();
+    log('GATT bağlantısı kuruldu.');
+
+    setStatus(`Bağlı: ${device.name || 'WS300'}`, 'on');
+    document.getElementById('btnMeasure').disabled = false;
+    document.getElementById('btnConnect').textContent = 'Yeniden Bağlan';
+  }catch(err){
+    log('Bağlantı hatası: ' + err.message, 'err');
+    setStatus('Bağlantı başarısız', 'err');
+  }
+}
+
+function onDisconnected(){
+  log('Cihaz bağlantısı koptu.', 'warn');
+  setStatus('Bağlantı koptu', 'err');
+  document.getElementById('btnMeasure').disabled = true;
+}
+
+// ============================================================
+// ÖLÇÜM AKIŞI
+// ============================================================
+async function runMeasurement(){
+  if(measuring) return;
+  measuring = true;
+  document.getElementById('btnMeasure').disabled = true;
+  document.getElementById('btnExport').disabled = true;
+  axisBuffers = { X:[], Y:[], Z:[] };
+  axisExpectedCount = { X:null, Y:null, Z:null };
+  axisSamples = { X:null, Y:null, Z:null };
+  setProgress(0);
+
+  try{
+    setStatus('Config yazılıyor…', 'busy');
+    const configSvc = await server.getPrimaryService(SVC_CONFIG);
+    const configChar = await configSvc.getCharacteristic(CHR_CONFIG);
+    await writeCharacteristic(configChar, CONFIG_BYTES);
+    log('Config yazıldı: ' + bytesToHex(CONFIG_BYTES));
+
+    setStatus('Bildirimler açılıyor…', 'busy');
+    const dataSvc = await server.getPrimaryService(SVC_DATA);
+    for(const uuid of Object.keys(CHAR_MAP)){
+      const ch = await dataSvc.getCharacteristic(uuid);
+      ch.addEventListener('characteristicvaluechanged', onNotify);
+      await ch.startNotifications();
+    }
+    log('6 karakteristikte bildirim aktif.');
+
+    setStatus('Tetikleniyor…', 'busy');
+    const trigSvc = await server.getPrimaryService(SVC_TRIGGER);
+    const trigChar = await trigSvc.getCharacteristic(CHR_TRIGGER);
+    await writeCharacteristic(trigChar, TRIGGER_BYTES);
+    log('Tetik gönderildi (0x01). Ölçüm bekleniyor…');
+    setStatus('Ölçüm alınıyor…', 'busy');
+
+    await waitForCompletion(15000);
+
+    setStatus('Veri işleniyor…', 'busy');
+    processAxisData();
+    renderCharts();
+    document.getElementById('btnExport').disabled = false;
+    setStatus(`Bağlı: ${device.name || 'WS300'} — ölçüm tamam`, 'on');
+    log('Ölçüm tamamlandı.');
+  }catch(err){
+    log('Ölçüm hatası: ' + err.message, 'err');
+    setStatus('Ölçüm başarısız', 'err');
+  }finally{
+    measuring = false;
+    document.getElementById('btnMeasure').disabled = false;
+    setProgress(null);
+  }
+}
+
+function onNotify(event){
+  const uuid = event.target.uuid;
+  const info = CHAR_MAP[uuid];
+  if(!info) return;
+  const dv = event.value; // DataView
+
+  if(info.role === 'count'){
+    // tek byte, unsigned 0-255 = son sequence index
+    axisExpectedCount[info.axis] = dv.getUint8(0);
+    log(`${info.axis} paket sayacı geldi: ${axisExpectedCount[info.axis]+1} paket bekleniyor`);
+  } else {
+    const seq = dv.getUint16(0, true); // ilk 2 byte little-endian = sıra no
+    // dv.buffer, tarayıcı tarafından bir sonraki bildirimde yeniden kullanılabilir;
+    // referans yerine kopya alıyoruz (slice) ki veri bozulmasın.
+    const bytes = new Uint8Array(dv.buffer.slice(dv.byteOffset+2, dv.byteOffset+dv.byteLength));
+    axisBuffers[info.axis].push({seq, bytes});
+    updateProgressFromBuffers();
+  }
+}
+
+function updateProgressFromBuffers(){
+  const total = axisBuffers.X.length + axisBuffers.Y.length + axisBuffers.Z.length;
+  // 3 eksen x ~106 paket beklenen, kaba ilerleme göstergesi
+  const pct = Math.min(100, Math.round((total / (106*3)) * 100));
+  setProgress(pct);
+}
+
+function waitForCompletion(timeoutMs){
+  return new Promise((resolve, reject)=>{
+    const start = Date.now();
+    const iv = setInterval(()=>{
+      const done = ['X','Y','Z'].every(ax=>{
+        const exp = axisExpectedCount[ax];
+        return exp !== null && axisBuffers[ax].length === exp+1;
+      });
+      if(done){ clearInterval(iv); resolve(); return; }
+      if(Date.now()-start > timeoutMs){
+        clearInterval(iv);
+        reject(new Error('Zaman aşımı — tüm eksenler tamamlanmadı ('+
+          ['X','Y','Z'].map(ax=>`${ax}:${axisBuffers[ax].length}/${axisExpectedCount[ax]!==null?axisExpectedCount[ax]+1:'?'}`).join(', ')+')'));
+      }
+    }, 100);
+  });
+}
+
+function processAxisData(){
+  for(const ax of ['X','Y','Z']){
+    const packets = axisBuffers[ax].slice().sort((a,b)=>a.seq-b.seq);
+    let totalBytes = 0;
+    packets.forEach(p=>totalBytes+=p.bytes.length);
+    const merged = new Uint8Array(totalBytes);
+    let offset=0;
+    for(const p of packets){ merged.set(p.bytes, offset); offset+=p.bytes.length; }
+
+    const n = Math.floor(merged.length/2);
+    const dv = new DataView(merged.buffer);
+    const g = new Float32Array(n);
+    for(let i=0;i<n;i++){
+      const raw = dv.getInt16(i*2, true); // little-endian signed int16
+      g[i] = raw * SCALE_G_PER_LSB;
+    }
+    axisSamples[ax] = g;
+    log(`${ax}: ${packets.length} paket birleştirildi → ${n} örnek`);
+  }
+}
+
+// ============================================================
+// FFT + PSD (G²/Hz), Hann pencere, güç-2 uzunluğuna sıfır dolgu
+// ============================================================
+function nextPow2(n){ let p=1; while(p<n) p*=2; return p; }
+
+function fft(re, im){
+  const n = re.length;
+  if(n<=1) return;
+  // bit-reversal permütasyonu
+  for(let i=1,j=0;i<n;i++){
+    let bit = n>>1;
+    for(; j&bit; bit>>=1) j ^= bit;
+    j ^= bit;
+    if(i<j){ [re[i],re[j]]=[re[j],re[i]]; [im[i],im[j]]=[im[j],im[i]]; }
+  }
+  for(let len=2; len<=n; len<<=1){
+    const ang = -2*Math.PI/len;
+    const wr = Math.cos(ang), wi = Math.sin(ang);
+    for(let i=0;i<n;i+=len){
+      let curWr=1, curWi=0;
+      for(let k=0;k<len/2;k++){
+        const ur=re[i+k], ui=im[i+k];
+        const vr=re[i+k+len/2]*curWr - im[i+k+len/2]*curWi;
+        const vi=re[i+k+len/2]*curWi + im[i+k+len/2]*curWr;
+        re[i+k]=ur+vr; im[i+k]=ui+vi;
+        re[i+k+len/2]=ur-vr; im[i+k+len/2]=ui-vi;
+        const nwr = curWr*wr - curWi*wi;
+        const nwi = curWr*wi + curWi*wr;
+        curWr=nwr; curWi=nwi;
+      }
+    }
+  }
+}
+
+function computePSD(samples, fs){
+  const N0 = samples.length;
+  const N = nextPow2(N0);
+  const re = new Float64Array(N);
+  const im = new Float64Array(N);
+  let winSumSq = 0;
+  for(let i=0;i<N0;i++){
+    const w = 0.5 - 0.5*Math.cos(2*Math.PI*i/(N0-1)); // Hann
+    re[i] = samples[i]*w;
+    winSumSq += w*w;
+  }
+  fft(re, im);
+  const half = N/2;
+  const freqs = new Float64Array(half);
+  const psd = new Float64Array(half);
+  const normFactor = 1/(fs*winSumSq);
+  for(let k=0;k<half;k++){
+    const mag2 = re[k]*re[k] + im[k]*im[k];
+    const factor = (k===0) ? normFactor : 2*normFactor;
+    psd[k] = mag2*factor;
+    freqs[k] = k*fs/N;
+  }
+  return {freqs, psd};
+}
+
+// ============================================================
+// GRAFİKLER
+// ============================================================
+function decimate(arr, maxPoints){
+  if(arr.length<=maxPoints) return arr.map((v,i)=>({x:i,y:v}));
+  const step = Math.ceil(arr.length/maxPoints);
+  const out=[];
+  for(let i=0;i<arr.length;i+=step) out.push({x:i,y:arr[i]});
+  return out;
+}
+
+function renderCharts(){
+  const colors = {X:'#ff6b6b', Y:'#5ec8ff', Z:'#3dffa0'};
+
+  // RMS / tepe okumaları
+  for(const ax of ['X','Y','Z']){
+    const s = axisSamples[ax];
+    let sumSq=0, peak=0;
+    for(let i=0;i<s.length;i++){ sumSq+=s[i]*s[i]; peak=Math.max(peak, Math.abs(s[i])); }
+    const rms = Math.sqrt(sumSq/s.length);
+    document.getElementById('rms'+ax).textContent = rms.toFixed(3);
+    document.getElementById('pk'+ax).textContent = 'tepe: ' + peak.toFixed(3) + ' g';
+  }
+
+  // zaman domeni (görüntüleme için decimate edilmiş, hesap tam veriyle yapıldı)
+  const timeDatasets = ['X','Y','Z'].map(ax=>{
+    const s = axisSamples[ax];
+    const pts = decimate(Array.from(s), 1500).map(p=>({x:(p.x/SAMPLE_RATE_HZ*1000), y:p.y}));
+    return { label:ax, data:pts, borderColor:colors[ax], borderWidth:1.2, pointRadius:0, tension:0 };
+  });
+
+  if(charts.time) charts.time.destroy();
+  charts.time = new Chart(document.getElementById('chartTime'), {
+    type:'line',
+    data:{ datasets: timeDatasets },
+    options: chartOptions('ms', 'g')
+  });
+
+  // PSD
+  const psdDatasets = ['X','Y','Z'].map(ax=>{
+    const {freqs, psd} = computePSD(axisSamples[ax], SAMPLE_RATE_HZ);
+    const pts = decimate(Array.from(psd), 1500).map(p=>({x:freqs[p.x], y:p.y}));
+    return { label:ax, data:pts, borderColor:colors[ax], borderWidth:1.2, pointRadius:0, tension:0 };
+  });
+
+  if(charts.psd) charts.psd.destroy();
+  charts.psd = new Chart(document.getElementById('chartPSD'), {
+    type:'line',
+    data:{ datasets: psdDatasets },
+    options: chartOptions('Hz', 'G²/Hz', true)
+  });
+}
+
+function chartOptions(xLabel, yLabel, logY){
+  return {
+    responsive:true,
+    animation:false,
+    interaction:{ mode:'nearest', intersect:false },
+    scales:{
+      x:{ type:'linear', title:{display:true, text:xLabel, color:'#7c8a80'},
+          ticks:{color:'#7c8a80', font:{family:'JetBrains Mono', size:10}},
+          grid:{color:'#1a221c'} },
+      y:{ type: logY?'logarithmic':'linear', title:{display:true, text:yLabel, color:'#7c8a80'},
+          ticks:{color:'#7c8a80', font:{family:'JetBrains Mono', size:10}},
+          grid:{color:'#1a221c'} }
+    },
+    plugins:{
+      legend:{ labels:{ color:'#d9e4dc', font:{family:'JetBrains Mono', size:11} } }
+    }
+  };
+}
+
+// ============================================================
+// CSV EXPORT
+// ============================================================
+function exportCSV(){
+  const n = Math.min(axisSamples.X.length, axisSamples.Y.length, axisSamples.Z.length);
+  let csv = 'ornek_no,zaman_ms,X_g,Y_g,Z_g\n';
+  for(let i=0;i<n;i++){
+    const t = (i/SAMPLE_RATE_HZ*1000).toFixed(4);
+    csv += `${i},${t},${axisSamples.X[i].toFixed(6)},${axisSamples.Y[i].toFixed(6)},${axisSamples.Z[i].toFixed(6)}\n`;
+  }
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().replace(/[:.]/g,'-');
+  a.href = url; a.download = `ws300_olcum_${stamp}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  log('CSV indirildi.');
+}
+
+function bytesToHex(bytes){
+  return Array.from(bytes).map(b=>b.toString(16).padStart(2,'0')).join(' ');
+}
+
+log('Hazır. "Cihaza Bağlan" ile başlayın.');
 </script>
 </body>
 </html>

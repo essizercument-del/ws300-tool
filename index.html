@@ -4,6 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>WS300 Titreşim Analiz — Faz 1</title>
+<script>
+// Tanı amaçlı: herhangi bir JS hatası olursa devtools'a gerek kalmadan
+// ekranda büyük bir uyarı olarak göster.
+window.addEventListener('error', function(e){
+  alert('JS HATASI: ' + e.message + '\nDosya: ' + e.filename + '\nSatır: ' + e.lineno);
+});
+window.addEventListener('unhandledrejection', function(e){
+  alert('PROMISE HATASI: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+});
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js" defer></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -269,7 +279,11 @@ async function connectDevice(){
   try{
     setStatus('Cihaz seçiliyor…', 'busy');
     device = await navigator.bluetooth.requestDevice({
-      filters: [{ services: [SVC_DATA] }],
+      filters: [
+        { namePrefix: 'CTC' },
+        { namePrefix: 'WS300' },
+        { services: [SVC_DATA] }
+      ],
       optionalServices: [SVC_CONFIG, SVC_TRIGGER, SVC_DATA]
     });
     log(`Seçildi: ${device.name || '(isimsiz)'}`);

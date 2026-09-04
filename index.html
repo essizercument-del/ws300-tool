@@ -106,8 +106,19 @@ window.addEventListener('unhandledrejection', function(e){
   }
   .axis-card{
     background:var(--panel); border:1px solid var(--line); border-radius:10px;
-    padding:12px 10px; text-align:center;
+    padding:12px 10px; text-align:center; cursor:pointer; transition:border-color .15s, transform .05s;
   }
+  .axis-card:active{ transform:scale(.97); }
+  .axis-card.has-data{ border-color:var(--phosphor-dim); }
+  .hint{
+    font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text-dim);
+    text-align:right; margin:16px 18px 8px;
+  }
+  .detail-header{
+    display:flex; align-items:center; gap:12px; margin:16px 18px 6px;
+  }
+  .backbtn{ padding:10px 16px; font-size:13px; flex-shrink:0; }
+  .detail-title{ font-size:18px; font-weight:700; }
   .axis-card .axis-label{
     font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.1em;
     color:var(--text-dim); margin-bottom:6px;
@@ -170,48 +181,58 @@ window.addEventListener('unhandledrejection', function(e){
   <div class="progress-bar" id="progressBar"></div>
 </div>
 
-<div class="readouts">
-  <div class="axis-card x">
-    <div class="axis-label">X EKSENİ</div>
-    <div class="rms" id="rmsX">—</div>
-    <div class="rms-unit">g RMS</div>
-    <div class="vel" id="velX">hız: —</div>
-    <div class="pk" id="pkX">tepe: —</div>
+<div id="mainView">
+  <div class="hint" id="axisHint">Spektrum için eksene dokunun →</div>
+  <div class="readouts">
+    <div class="axis-card x" data-axis="X">
+      <div class="axis-label">X EKSENİ</div>
+      <div class="rms" id="rmsX">—</div>
+      <div class="rms-unit">g RMS</div>
+      <div class="vel" id="velX">hız: —</div>
+      <div class="pk" id="pkX">tepe: —</div>
+    </div>
+    <div class="axis-card y" data-axis="Y">
+      <div class="axis-label">Y EKSENİ</div>
+      <div class="rms" id="rmsY">—</div>
+      <div class="rms-unit">g RMS</div>
+      <div class="vel" id="velY">hız: —</div>
+      <div class="pk" id="pkY">tepe: —</div>
+    </div>
+    <div class="axis-card z" data-axis="Z">
+      <div class="axis-label">Z EKSENİ</div>
+      <div class="rms" id="rmsZ">—</div>
+      <div class="rms-unit">g RMS</div>
+      <div class="vel" id="velZ">hız: —</div>
+      <div class="pk" id="pkZ">tepe: —</div>
+    </div>
   </div>
-  <div class="axis-card y">
-    <div class="axis-label">Y EKSENİ</div>
-    <div class="rms" id="rmsY">—</div>
-    <div class="rms-unit">g RMS</div>
-    <div class="vel" id="velY">hız: —</div>
-    <div class="pk" id="pkY">tepe: —</div>
+
+  <div class="log" id="log"></div>
+
+  <footer>testigotr.com.tr — WS300 saha aracı — Faz 1 (RPM / rulman katmanı Faz 2'de)</footer>
+</div>
+
+<div id="detailView" style="display:none">
+  <div class="detail-header">
+    <button class="ghost backbtn" id="btnBack">← Geri</button>
+    <div class="detail-title" id="detailTitle">Eksen — Spektrum</div>
   </div>
-  <div class="axis-card z">
-    <div class="axis-label">Z EKSENİ</div>
-    <div class="rms" id="rmsZ">—</div>
-    <div class="rms-unit">g RMS</div>
-    <div class="vel" id="velZ">hız: —</div>
-    <div class="pk" id="pkZ">tepe: —</div>
+
+  <div class="panel">
+    <div class="panel-title">Zaman Domeni <span class="tag">g vs ms</span></div>
+    <canvas id="chartDetailTime" height="220"></canvas>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">Hız Spektrumu <span class="tag">mm/s/√Hz vs Hz — genel şiddet (ISO 10816)</span></div>
+    <canvas id="chartDetailVel" height="220"></canvas>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">Rulman Durumu — İvme PSD <span class="tag">G²/Hz vs Hz</span></div>
+    <canvas id="chartDetailPSD" height="220"></canvas>
   </div>
 </div>
-
-<div class="panel">
-  <div class="panel-title">Zaman Domeni <span class="tag">g vs ms</span></div>
-  <canvas id="chartTime" height="220"></canvas>
-</div>
-
-<div class="panel">
-  <div class="panel-title">Hız Spektrumu <span class="tag">mm/s/√Hz vs Hz — genel şiddet (ISO 10816)</span></div>
-  <canvas id="chartVel" height="220"></canvas>
-</div>
-
-<div class="panel">
-  <div class="panel-title">Rulman Durumu — İvme PSD <span class="tag">G²/Hz vs Hz</span></div>
-  <canvas id="chartPSD" height="220"></canvas>
-</div>
-
-<div class="log" id="log"></div>
-
-<footer>testigotr.com.tr — WS300 saha aracı — Faz 1 (RPM / rulman katmanı Faz 2'de)</footer>
 
 <script>
 // ============================================================
@@ -371,7 +392,7 @@ async function runMeasurement(){
 
     setStatus('Veri işleniyor…', 'busy');
     processAxisData();
-    renderCharts();
+    computeResults();
     document.getElementById('btnExport').disabled = false;
     setStatus(`Bağlı: ${device.name || 'WS300'} — ölçüm tamam`, 'on');
     log('Ölçüm tamamlandı.');
@@ -545,13 +566,12 @@ function decimate(arr, maxPoints){
   return out;
 }
 
-function renderCharts(){
-  const colors = {X:'#ff6b6b', Y:'#5ec8ff', Z:'#3dffa0'};
-  const VEL_F_LOW = 10, VEL_F_HIGH = 1000; // ISO 10816 pratiği
+const AXIS_COLORS = {X:'#ff6b6b', Y:'#5ec8ff', Z:'#3dffa0'};
+const VEL_F_LOW = 10, VEL_F_HIGH = 1000; // ISO 10816 pratiği
+let axisSpectra = { X:null, Y:null, Z:null }; // {freqs, psd, velAsd, rmsVelocity} - eksen başına cache
+let currentDetailAxis = null;
 
-  // RMS / tepe okumaları + PSD + hız spektrumu (tek geçişte, eksen başına)
-  const psdByAxis = {};
-  const velByAxis = {};
+function computeResults(){
   for(const ax of ['X','Y','Z']){
     const s = axisSamples[ax];
     let sumSq=0, peak=0;
@@ -562,53 +582,59 @@ function renderCharts(){
 
     const {freqs, psd} = computePSD(s, SAMPLE_RATE_HZ);
     const {velAsd, rmsVelocity} = velocitySpectrumFromAccelPSD(freqs, psd, VEL_F_LOW, VEL_F_HIGH);
-    psdByAxis[ax] = {freqs, psd};
-    velByAxis[ax] = {freqs, velAsd};
+    axisSpectra[ax] = {freqs, psd, velAsd, rmsVelocity};
     document.getElementById('vel'+ax).textContent = 'hız: ' + rmsVelocity.toFixed(2) + ' mm/s';
+
+    document.querySelector('.axis-card.'+ax.toLowerCase()).classList.add('has-data');
   }
+}
 
-  // zaman domeni (görüntüleme için decimate edilmiş, hesap tam veriyle yapıldı)
-  const timeDatasets = ['X','Y','Z'].map(ax=>{
-    const s = axisSamples[ax];
-    const pts = decimate(Array.from(s), 1500).map(p=>({x:(p.x/SAMPLE_RATE_HZ*1000), y:p.y}));
-    return { label:ax, data:pts, borderColor:colors[ax], borderWidth:1.2, pointRadius:0, tension:0 };
-  });
+function showDetail(ax){
+  if(!axisSpectra[ax]) return; // henüz ölçüm alınmadı
+  currentDetailAxis = ax;
+  document.getElementById('detailTitle').textContent = ax + ' Ekseni — Spektrum';
+  document.getElementById('mainView').style.display = 'none';
+  document.getElementById('detailView').style.display = 'block';
+  window.scrollTo(0,0);
 
+  const color = AXIS_COLORS[ax];
+  const s = axisSamples[ax];
+  const {freqs, psd, velAsd} = axisSpectra[ax];
+
+  const timePts = decimate(Array.from(s), 1500).map(p=>({x:(p.x/SAMPLE_RATE_HZ*1000), y:p.y}));
   if(charts.time) charts.time.destroy();
-  charts.time = new Chart(document.getElementById('chartTime'), {
+  charts.time = new Chart(document.getElementById('chartDetailTime'), {
     type:'line',
-    data:{ datasets: timeDatasets },
+    data:{ datasets:[{ label:ax, data:timePts, borderColor:color, borderWidth:1.2, pointRadius:0, tension:0 }] },
     options: chartOptions('ms', 'g')
   });
 
-  // Hız spektrumu (mm/s/√Hz) — genel titreşim şiddeti
-  const velDatasets = ['X','Y','Z'].map(ax=>{
-    const {freqs, velAsd} = velByAxis[ax];
-    const pts = decimate(Array.from(velAsd), 1500).map(p=>({x:freqs[p.x], y:p.y}));
-    return { label:ax, data:pts, borderColor:colors[ax], borderWidth:1.2, pointRadius:0, tension:0 };
-  });
-
+  const velPts = decimate(Array.from(velAsd), 1500).map(p=>({x:freqs[p.x], y:p.y}));
   if(charts.vel) charts.vel.destroy();
-  charts.vel = new Chart(document.getElementById('chartVel'), {
+  charts.vel = new Chart(document.getElementById('chartDetailVel'), {
     type:'line',
-    data:{ datasets: velDatasets },
+    data:{ datasets:[{ label:ax+' Hız (mm/s/√Hz)', data:velPts, borderColor:color, borderWidth:1.2, pointRadius:0, tension:0 }] },
     options: chartOptions('Hz', 'mm/s/√Hz', false, VEL_F_HIGH)
   });
 
-  // Rulman durumu — İvme PSD (G²/Hz)
-  const psdDatasets = ['X','Y','Z'].map(ax=>{
-    const {freqs, psd} = psdByAxis[ax];
-    const pts = decimate(Array.from(psd), 1500).map(p=>({x:freqs[p.x], y:p.y}));
-    return { label:ax, data:pts, borderColor:colors[ax], borderWidth:1.2, pointRadius:0, tension:0 };
-  });
-
+  const psdPts = decimate(Array.from(psd), 1500).map(p=>({x:freqs[p.x], y:p.y}));
   if(charts.psd) charts.psd.destroy();
-  charts.psd = new Chart(document.getElementById('chartPSD'), {
+  charts.psd = new Chart(document.getElementById('chartDetailPSD'), {
     type:'line',
-    data:{ datasets: psdDatasets },
+    data:{ datasets:[{ label:ax+' PSD (g²/Hz)', data:psdPts, borderColor:color, borderWidth:1.2, pointRadius:0, tension:0 }] },
     options: chartOptions('Hz', 'G²/Hz', true)
   });
 }
+
+function showMain(){
+  document.getElementById('detailView').style.display = 'none';
+  document.getElementById('mainView').style.display = 'block';
+}
+
+document.querySelectorAll('.axis-card').forEach(card=>{
+  card.addEventListener('click', ()=> showDetail(card.dataset.axis));
+});
+document.getElementById('btnBack').addEventListener('click', showMain);
 
 function chartOptions(xLabel, yLabel, logY, xMax){
   return {

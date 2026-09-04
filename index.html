@@ -117,6 +117,7 @@ window.addEventListener('unhandledrejection', function(e){
   .axis-card.z .axis-label{ color:var(--phosphor); }
   .axis-card .rms{ font-family:'JetBrains Mono',monospace; font-size:19px; font-weight:700; }
   .axis-card .rms-unit{ font-size:10px; color:var(--text-dim); }
+  .axis-card .vel{ font-family:'JetBrains Mono',monospace; font-size:13px; color:#5ec8ff; margin-top:5px; }
   .axis-card .pk{ font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text-dim); margin-top:3px; }
 
   .panel{
@@ -174,18 +175,21 @@ window.addEventListener('unhandledrejection', function(e){
     <div class="axis-label">X EKSENİ</div>
     <div class="rms" id="rmsX">—</div>
     <div class="rms-unit">g RMS</div>
+    <div class="vel" id="velX">hız: —</div>
     <div class="pk" id="pkX">tepe: —</div>
   </div>
   <div class="axis-card y">
     <div class="axis-label">Y EKSENİ</div>
     <div class="rms" id="rmsY">—</div>
     <div class="rms-unit">g RMS</div>
+    <div class="vel" id="velY">hız: —</div>
     <div class="pk" id="pkY">tepe: —</div>
   </div>
   <div class="axis-card z">
     <div class="axis-label">Z EKSENİ</div>
     <div class="rms" id="rmsZ">—</div>
     <div class="rms-unit">g RMS</div>
+    <div class="vel" id="velZ">hız: —</div>
     <div class="pk" id="pkZ">tepe: —</div>
   </div>
 </div>
@@ -196,7 +200,12 @@ window.addEventListener('unhandledrejection', function(e){
 </div>
 
 <div class="panel">
-  <div class="panel-title">Güç Spektral Yoğunluğu <span class="tag">G²/Hz vs Hz</span></div>
+  <div class="panel-title">Hız Spektrumu <span class="tag">mm/s/√Hz vs Hz — genel şiddet (ISO 10816)</span></div>
+  <canvas id="chartVel" height="220"></canvas>
+</div>
+
+<div class="panel">
+  <div class="panel-title">Rulman Durumu — İvme PSD <span class="tag">G²/Hz vs Hz</span></div>
   <canvas id="chartPSD" height="220"></canvas>
 </div>
 
@@ -238,7 +247,7 @@ let axisBuffers = { X:[], Y:[], Z:[] };   // her biri {seq, bytes}
 let axisExpectedCount = { X:null, Y:null, Z:null };
 let axisSamples = { X:null, Y:null, Z:null }; // Float32Array g değerleri
 let measuring = false;
-let charts = {time:null, psd:null};
+let charts = {time:null, vel:null, psd:null};
 
 // ============================================================
 // LOG / STATUS UI
@@ -501,6 +510,30 @@ function computePSD(samples, fs){
   return {freqs, psd};
 }
 
+// İvme PSD'sini (g²/Hz) hız spektrumuna çevirir. Frekans domeninde integrasyon
+// (ivme -> hız = genliği 2*pi*f'ye böl) ile yapılır. ISO 10816 pratiğine uygun
+// olarak 10-1000 Hz bandı dışı (DC yakını dahil) integrasyonda ve grafikte
+// dışlanır — düşük frekanslarda 1/f bölme gürültüyü fiziksel olmayan şekilde
+// büyütür.
+function velocitySpectrumFromAccelPSD(freqs, psdG2, fLow, fHigh){
+  const G_TO_MS2 = 9.80665;
+  const n = freqs.length;
+  const velAsd = new Float64Array(n); // mm/s/√Hz (lineer genlik spektral yoğunluğu)
+  const df = n>1 ? (freqs[1]-freqs[0]) : 0;
+  let sumPSD_v = 0;
+  for(let k=0;k<n;k++){
+    const f = freqs[k];
+    if(f < fLow || f > fHigh){ velAsd[k]=0; continue; }
+    const psd_ms2 = psdG2[k] * G_TO_MS2*G_TO_MS2;      // (m/s²)²/Hz
+    const psd_v_ms = psd_ms2 / ((2*Math.PI*f)*(2*Math.PI*f)); // (m/s)²/Hz
+    const psd_v_mms = psd_v_ms * 1e6;                   // (mm/s)²/Hz
+    velAsd[k] = Math.sqrt(psd_v_mms);
+    sumPSD_v += psd_v_mms * df;
+  }
+  const rmsVelocity = Math.sqrt(sumPSD_v); // mm/s RMS, 10-1000Hz bandı
+  return {velAsd, rmsVelocity};
+}
+
 // ============================================================
 // GRAFİKLER
 // ============================================================
@@ -514,15 +547,24 @@ function decimate(arr, maxPoints){
 
 function renderCharts(){
   const colors = {X:'#ff6b6b', Y:'#5ec8ff', Z:'#3dffa0'};
+  const VEL_F_LOW = 10, VEL_F_HIGH = 1000; // ISO 10816 pratiği
 
-  // RMS / tepe okumaları
+  // RMS / tepe okumaları + PSD + hız spektrumu (tek geçişte, eksen başına)
+  const psdByAxis = {};
+  const velByAxis = {};
   for(const ax of ['X','Y','Z']){
     const s = axisSamples[ax];
     let sumSq=0, peak=0;
     for(let i=0;i<s.length;i++){ sumSq+=s[i]*s[i]; peak=Math.max(peak, Math.abs(s[i])); }
     const rms = Math.sqrt(sumSq/s.length);
-    document.getElementById('rms'+ax).textContent = rms.toFixed(3);
-    document.getElementById('pk'+ax).textContent = 'tepe: ' + peak.toFixed(3) + ' g';
+    document.getElementById('rms'+ax).textContent = rms.toFixed(4);
+    document.getElementById('pk'+ax).textContent = 'tepe: ' + peak.toFixed(4) + ' g';
+
+    const {freqs, psd} = computePSD(s, SAMPLE_RATE_HZ);
+    const {velAsd, rmsVelocity} = velocitySpectrumFromAccelPSD(freqs, psd, VEL_F_LOW, VEL_F_HIGH);
+    psdByAxis[ax] = {freqs, psd};
+    velByAxis[ax] = {freqs, velAsd};
+    document.getElementById('vel'+ax).textContent = 'hız: ' + rmsVelocity.toFixed(2) + ' mm/s';
   }
 
   // zaman domeni (görüntüleme için decimate edilmiş, hesap tam veriyle yapıldı)
@@ -539,9 +581,23 @@ function renderCharts(){
     options: chartOptions('ms', 'g')
   });
 
-  // PSD
+  // Hız spektrumu (mm/s/√Hz) — genel titreşim şiddeti
+  const velDatasets = ['X','Y','Z'].map(ax=>{
+    const {freqs, velAsd} = velByAxis[ax];
+    const pts = decimate(Array.from(velAsd), 1500).map(p=>({x:freqs[p.x], y:p.y}));
+    return { label:ax, data:pts, borderColor:colors[ax], borderWidth:1.2, pointRadius:0, tension:0 };
+  });
+
+  if(charts.vel) charts.vel.destroy();
+  charts.vel = new Chart(document.getElementById('chartVel'), {
+    type:'line',
+    data:{ datasets: velDatasets },
+    options: chartOptions('Hz', 'mm/s/√Hz', false, VEL_F_HIGH)
+  });
+
+  // Rulman durumu — İvme PSD (G²/Hz)
   const psdDatasets = ['X','Y','Z'].map(ax=>{
-    const {freqs, psd} = computePSD(axisSamples[ax], SAMPLE_RATE_HZ);
+    const {freqs, psd} = psdByAxis[ax];
     const pts = decimate(Array.from(psd), 1500).map(p=>({x:freqs[p.x], y:p.y}));
     return { label:ax, data:pts, borderColor:colors[ax], borderWidth:1.2, pointRadius:0, tension:0 };
   });
@@ -554,13 +610,13 @@ function renderCharts(){
   });
 }
 
-function chartOptions(xLabel, yLabel, logY){
+function chartOptions(xLabel, yLabel, logY, xMax){
   return {
     responsive:true,
     animation:false,
     interaction:{ mode:'nearest', intersect:false },
     scales:{
-      x:{ type:'linear', title:{display:true, text:xLabel, color:'#7c8a80'},
+      x:{ type:'linear', max:xMax, title:{display:true, text:xLabel, color:'#7c8a80'},
           ticks:{color:'#7c8a80', font:{family:'JetBrains Mono', size:10}},
           grid:{color:'#1a221c'} },
       y:{ type: logY?'logarithmic':'linear', title:{display:true, text:yLabel, color:'#7c8a80'},

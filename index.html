@@ -14,6 +14,23 @@ window.addEventListener('unhandledrejection', function(e){
   alert('PROMISE HATASI: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
 });
 </script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<script>
+// ============================================================
+// FIREBASE — ws300-trend-takip projesi
+// ============================================================
+const firebaseConfig = {
+  apiKey: "AIzaSyAtZmFzJA9XKzV2e5DvwyPjM1gLzGH872A",
+  authDomain: "ws300-trend-takip.firebaseapp.com",
+  projectId: "ws300-trend-takip",
+  storageBucket: "ws300-trend-takip.firebasestorage.app",
+  messagingSenderId: "507576270688",
+  appId: "1:507576270688:web:fbc514400305b0595ea805"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+</script>
 <script>
 /*!
  * Chart.js v4.4.4
@@ -126,10 +143,12 @@ window.addEventListener('unhandledrejection', function(e){
   .axis-card.x .axis-label{ color:#ff6b6b; }
   .axis-card.y .axis-label{ color:#5ec8ff; }
   .axis-card.z .axis-label{ color:var(--phosphor); }
-  .axis-card .rms{ font-family:'JetBrains Mono',monospace; font-size:19px; font-weight:700; }
-  .axis-card .rms-unit{ font-size:10px; color:var(--text-dim); }
-  .axis-card .vel{ font-family:'JetBrains Mono',monospace; font-size:13px; color:#5ec8ff; margin-top:5px; }
-  .axis-card .pk{ font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text-dim); margin-top:3px; }
+  .axis-card .vel{ font-family:'JetBrains Mono',monospace; font-size:26px; font-weight:700; color:var(--text); }
+  .axis-card .vel-unit{ font-size:11px; color:var(--text-dim); margin-top:2px; }
+  .vel-verdict{
+    margin-top:8px; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:700;
+    display:inline-block; font-family:'JetBrains Mono',monospace;
+  }
 
   .panel{
     margin:16px 18px 0; background:var(--panel); border:1px solid var(--line);
@@ -151,6 +170,73 @@ window.addEventListener('unhandledrejection', function(e){
   .log .warn{ color:var(--amber); }
   .log .err{ color:var(--red); }
 
+  /* ============== SEÇİM EKRANLARI (Ünite / Tag / Nokta) ============== */
+  .crumb{
+    display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+    margin:16px 18px 4px; font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--text-dim);
+  }
+  .crumb span.active{ color:var(--phosphor); }
+  .crumb .sep{ color:var(--line); }
+  .crumb .link{ cursor:pointer; text-decoration:underline; }
+  .rowlist{ margin:10px 18px 0; }
+  .rowitem{
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:14px 14px; margin-bottom:8px;
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+  }
+  .rowitem .rmain{ flex:1; min-width:0; cursor:pointer; }
+  .rowitem .rname{ font-size:15px; font-weight:600; color:var(--text); }
+  .rowitem .rsub{ font-size:11.5px; color:var(--text-dim); font-family:'JetBrains Mono',monospace; margin-top:2px; }
+  .rowitem .racts{ display:flex; gap:6px; flex-shrink:0; }
+  .ricon{
+    width:32px; height:32px; border-radius:8px; border:1px solid var(--line); background:var(--panel-2);
+    color:var(--text-dim); display:flex; align-items:center; justify-content:center; font-size:14px; cursor:pointer;
+  }
+  .ricon:active{ background:var(--line); }
+  .addrow{
+    display:flex; align-items:center; justify-content:center; gap:6px;
+    padding:13px; margin:10px 18px 0; border:1px dashed var(--line); border-radius:10px;
+    color:var(--phosphor-dim); font-size:13px; cursor:pointer;
+  }
+  .rpm-row{
+    display:flex; align-items:center; gap:10px; margin:16px 18px 0;
+    background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px;
+  }
+  .rpm-row label{ font-size:12.5px; color:var(--text-dim); flex-shrink:0; }
+  .rpm-row input{
+    flex:1; background:var(--bg); border:1px solid var(--line); border-radius:8px; color:var(--text);
+    padding:8px 10px; font-family:'JetBrains Mono',monospace; font-size:14px; min-width:0;
+  }
+  .trend-box{
+    margin:16px 18px 0; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px;
+  }
+  .trend-title{
+    font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--text-dim); margin-bottom:8px;
+  }
+  .trend-empty{ font-size:12.5px; color:var(--text-dim); text-align:center; padding:10px 0; }
+  .modal-backdrop{
+    position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:100;
+    display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  .modal-box{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px;
+    width:100%; max-width:340px;
+  }
+  .modal-box h3{ margin:0 0 10px; font-size:15px; }
+  .modal-box p{ font-size:12.5px; color:var(--text-dim); margin:0 0 12px; line-height:1.5; }
+  .modal-box input{
+    width:100%; background:var(--bg); border:1px solid var(--line); border-radius:8px; color:var(--text);
+    padding:10px 12px; font-size:14px; margin-bottom:12px;
+  }
+  .modal-box .modal-acts{ display:flex; gap:8px; justify-content:flex-end; }
+  .modal-box button{
+    padding:9px 16px; border-radius:8px; border:1px solid var(--line); background:var(--panel-2);
+    color:var(--text); font-size:13px; cursor:pointer;
+  }
+  .modal-box button.danger{ background:var(--red); border-color:var(--red); color:#1a0000; font-weight:700; }
+  .modal-box button.danger:disabled{ opacity:.4; background:var(--panel-2); color:var(--text-dim); }
+
   footer{
     margin:24px 18px 0; font-size:11px; color:var(--text-dim); text-align:center;
     font-family:'JetBrains Mono',monospace;
@@ -166,9 +252,76 @@ window.addEventListener('unhandledrejection', function(e){
   <div class="sub">Bağlan → tetikle → ham ivme verisi + G²/Hz PSD</div>
 </header>
 
+<!-- ============== SEÇİM EKRANI (Ünite → Tag → Ön/Arka) ============== -->
+<div id="selectView">
+  <div class="crumb" id="crumb"></div>
+  <div class="rowlist" id="rowlist"></div>
+  <div class="addrow" id="addRowBtn"></div>
+</div>
+
+<!-- ============== SİLME ONAY MODALI ============== -->
+<div class="modal-backdrop" id="deleteModal" style="display:none">
+  <div class="modal-box">
+    <h3 id="deleteModalTitle">Silinsin mi?</h3>
+    <p id="deleteModalText"></p>
+    <input type="text" id="deleteConfirmInput" placeholder="sil">
+    <div class="modal-acts">
+      <button id="deleteCancelBtn">Vazgeç</button>
+      <button class="danger" id="deleteConfirmBtn" disabled>Sil</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== AD EKLE / DÜZENLE MODALI (Ünite) ============== -->
+<div class="modal-backdrop" id="nameModal" style="display:none">
+  <div class="modal-box">
+    <h3 id="nameModalTitle">Ekle</h3>
+    <input type="text" id="nameModalInput" placeholder="İsim">
+    <div class="modal-acts">
+      <button id="nameCancelBtn">Vazgeç</button>
+      <button id="nameSaveBtn">Kaydet</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== TAG EKLE / DÜZENLE MODALI ============== -->
+<div class="modal-backdrop" id="tagModal" style="display:none">
+  <div class="modal-box">
+    <h3 id="tagModalTitle">Tag ekle</h3>
+    <input type="text" id="tagModalName" placeholder="İsim (örn. 1.1-zone1)">
+    <input type="number" id="tagModalKw" placeholder="Motor gücü (kW)">
+    <select id="tagModalFoundation" style="width:100%; background:var(--bg); border:1px solid var(--line); border-radius:8px; color:var(--text); padding:10px 12px; font-size:14px; margin-bottom:12px;">
+      <option value="rijit">Temel: Rijit / ağır</option>
+      <option value="esnek">Temel: Esnek / hafif</option>
+    </select>
+    <input type="text" id="tagModalBearingOn" placeholder="Ön (DE) rulman kodu — örn. 6309">
+    <input type="text" id="tagModalBearingArka" placeholder="Arka (NDE) rulman kodu — örn. 6205">
+    <div class="modal-acts">
+      <button id="tagCancelBtn">Vazgeç</button>
+      <button id="tagSaveBtn">Kaydet</button>
+    </div>
+  </div>
+</div>
+
+<div id="statusView" style="display:none">
+<div class="crumb" id="pointCrumb" style="margin-top:16px">
+  <span class="link" id="btnBackToSelect">← Ünite / Tag seç</span>
+  <span class="sep">·</span>
+  <span class="active" id="pointCrumbLabel"></span>
+</div>
 <div class="status-bar">
   <div class="dot" id="statusDot"></div>
   <div id="statusText">Cihaza bağlı değil</div>
+</div>
+
+<div class="rpm-row">
+  <label for="rpmInput">RPM</label>
+  <input type="number" id="rpmInput" placeholder="örn. 1450">
+</div>
+
+<div class="trend-box" id="trendBox">
+  <div class="trend-title">Geçmiş Ölçümler (RMS Hız, mm/s)</div>
+  <div id="trendContent"><div class="trend-empty">Yükleniyor…</div></div>
 </div>
 
 <div class="controls">
@@ -186,24 +339,21 @@ window.addEventListener('unhandledrejection', function(e){
   <div class="readouts">
     <div class="axis-card x" data-axis="X">
       <div class="axis-label">X EKSENİ</div>
-      <div class="rms" id="rmsX">—</div>
-      <div class="rms-unit">g RMS</div>
-      <div class="vel" id="velX">hız: —</div>
-      <div class="pk" id="pkX">tepe: —</div>
+      <div class="vel" id="velX">—</div>
+      <div class="vel-unit">mm/s</div>
+      <div class="vel-verdict" id="verdictX"></div>
     </div>
     <div class="axis-card y" data-axis="Y">
       <div class="axis-label">Y EKSENİ</div>
-      <div class="rms" id="rmsY">—</div>
-      <div class="rms-unit">g RMS</div>
-      <div class="vel" id="velY">hız: —</div>
-      <div class="pk" id="pkY">tepe: —</div>
+      <div class="vel" id="velY">—</div>
+      <div class="vel-unit">mm/s</div>
+      <div class="vel-verdict" id="verdictY"></div>
     </div>
     <div class="axis-card z" data-axis="Z">
       <div class="axis-label">Z EKSENİ</div>
-      <div class="rms" id="rmsZ">—</div>
-      <div class="rms-unit">g RMS</div>
-      <div class="vel" id="velZ">hız: —</div>
-      <div class="pk" id="pkZ">tepe: —</div>
+      <div class="vel" id="velZ">—</div>
+      <div class="vel-unit">mm/s</div>
+      <div class="vel-verdict" id="verdictZ"></div>
     </div>
   </div>
 
@@ -233,6 +383,7 @@ window.addEventListener('unhandledrejection', function(e){
     <canvas id="chartDetailPSD" height="220"></canvas>
   </div>
 </div>
+</div><!-- /statusView -->
 
 <script>
 // ============================================================
@@ -269,6 +420,384 @@ let axisExpectedCount = { X:null, Y:null, Z:null };
 let axisSamples = { X:null, Y:null, Z:null }; // Float32Array g değerleri
 let measuring = false;
 let charts = {time:null, vel:null, psd:null};
+
+// ============================================================
+// ÜNİTE / TAG / NOKTA SEÇİMİ + FIRESTORE CRUD
+// ============================================================
+// Hiyerarşi: units/{unitId} -> tags/{tagId} -> measurements/{measId}
+// Ön/Arka birer Firestore dokümanı değil, measurement dokümanındaki
+// "point" alanıyla (on|arka) ayrılan sabit iki noktadır.
+let selUnit = null;   // {id, name}
+let selTag = null;    // {id, name}
+let selPoint = null;  // 'on' | 'arka'
+let pendingDelete = null; // {type:'unit'|'tag', id, name}
+let trendChart = null;
+
+function unitsCol(){ return db.collection('units'); }
+function tagsCol(unitId){ return db.collection('units').doc(unitId).collection('tags'); }
+function measCol(unitId, tagId){ return db.collection('units').doc(unitId).collection('tags').doc(tagId).collection('measurements'); }
+
+async function nextOrder(colRef){
+  const snap = await colRef.orderBy('order','desc').limit(1).get();
+  if(snap.empty) return 0;
+  return (snap.docs[0].data().order || 0) + 1;
+}
+
+function renderCrumb(){
+  const crumb = document.getElementById('crumb');
+  const parts = [{label:'Üniteler', fn:()=>{ selUnit=null; selTag=null; renderSelectView(); }}];
+  if(selUnit) parts.push({label:selUnit.name, fn:()=>{ selTag=null; renderSelectView(); }});
+  if(selTag) parts.push({label:selTag.name, fn:null});
+  crumb.innerHTML = '';
+  parts.forEach((p,i)=>{
+    if(i>0){ const sep=document.createElement('span'); sep.className='sep'; sep.textContent='›'; crumb.appendChild(sep); }
+    const el = document.createElement('span');
+    el.textContent = p.label;
+    if(p.fn){ el.className='link'; el.onclick = p.fn; } else { el.className='active'; }
+    crumb.appendChild(el);
+  });
+}
+
+async function renderSelectView(){
+  document.getElementById('selectView').style.display = 'block';
+  document.getElementById('statusView').style.display = 'none';
+  renderCrumb();
+  const list = document.getElementById('rowlist');
+  const addBtn = document.getElementById('addRowBtn');
+  list.innerHTML = '<div class="trend-empty">Yükleniyor…</div>';
+
+  if(!selUnit){
+    addBtn.innerHTML = '+ Ünite ekle';
+    addBtn.onclick = ()=> openNameModal('Yeni ünite', '', async(name)=>{
+      const order = await nextOrder(unitsCol());
+      await unitsCol().add({name, order, createdAt: firebase.firestore.FieldValue.serverTimestamp()});
+      renderSelectView();
+    });
+    const snap = await unitsCol().orderBy('order').get();
+    if(snap.empty){ list.innerHTML = '<div class="trend-empty">Henüz ünite yok. Aşağıdan ekleyin.</div>'; return; }
+    const docs = snap.docs;
+    list.innerHTML = '';
+    docs.forEach((d,i)=>{
+      const u = {id:d.id, ...d.data()};
+      list.appendChild(buildRow(u.name, '', {
+        onOpen: ()=>{ selUnit = u; renderSelectView(); },
+        onEdit: ()=> openNameModal('Ünite adını düzenle', u.name, async(name)=>{
+          await unitsCol().doc(u.id).update({name}); renderSelectView();
+        }),
+        onDelete: ()=> confirmDelete('unit', u.id, u.name),
+        onUp: i>0 ? ()=> swapOrder(unitsCol(), docs, i, i-1) : null,
+        onDown: i<docs.length-1 ? ()=> swapOrder(unitsCol(), docs, i, i+1) : null
+      }));
+    });
+    return;
+  }
+
+  if(!selTag){
+    addBtn.innerHTML = '+ Tag ekle';
+    addBtn.onclick = ()=> openTagModal('Yeni tag', {}, async(data)=>{
+      const order = await nextOrder(tagsCol(selUnit.id));
+      await tagsCol(selUnit.id).add({...data, order, createdAt: firebase.firestore.FieldValue.serverTimestamp()});
+      renderSelectView();
+    });
+    const snap = await tagsCol(selUnit.id).orderBy('order').get();
+    if(snap.empty){ list.innerHTML = '<div class="trend-empty">Bu ünitede henüz tag yok. Aşağıdan ekleyin.</div>'; return; }
+    const docs = snap.docs;
+    list.innerHTML = '';
+    docs.forEach((d,i)=>{
+      const t = {id:d.id, ...d.data()};
+      const cls = isoClass(t.kw, t.foundation);
+      const sub = (t.kw ? t.kw+' kW · ' : '') + (cls ? 'Class '+cls : 'sınıf tanımsız');
+      list.appendChild(buildRow(t.name, sub, {
+        onOpen: ()=>{ selTag = t; renderSelectView(); },
+        onEdit: ()=> openTagModal('Tag düzenle', t, async(data)=>{
+          await tagsCol(selUnit.id).doc(t.id).update(data); renderSelectView();
+        }),
+        onDelete: ()=> confirmDelete('tag', t.id, t.name),
+        onUp: i>0 ? ()=> swapOrder(tagsCol(selUnit.id), docs, i, i-1) : null,
+        onDown: i<docs.length-1 ? ()=> swapOrder(tagsCol(selUnit.id), docs, i, i+1) : null
+      }));
+    });
+    return;
+  }
+
+  // Ön / Arka nokta seçimi
+  addBtn.innerHTML = '';
+  list.innerHTML = '';
+  list.appendChild(buildRow('Ön ölçüm noktası', 'DE — tahrik tarafı' + (selTag.bearingOn ? ' · Rulman: '+selTag.bearingOn : ''), { onOpen: ()=> choosePoint('on') }));
+  list.appendChild(buildRow('Arka ölçüm noktası', 'NDE — serbest taraf' + (selTag.bearingArka ? ' · Rulman: '+selTag.bearingArka : ''), { onOpen: ()=> choosePoint('arka') }));
+}
+
+function buildRow(name, sub, acts){
+  const row = document.createElement('div');
+  row.className = 'rowitem';
+  const main = document.createElement('div');
+  main.className = 'rmain';
+  main.innerHTML = `<div class="rname"></div>` + (sub ? `<div class="rsub"></div>` : '');
+  main.querySelector('.rname').textContent = name;
+  if(sub) main.querySelector('.rsub').textContent = sub;
+  if(acts.onOpen) main.onclick = acts.onOpen;
+  row.appendChild(main);
+  const wrap = document.createElement('div');
+  wrap.className = 'racts';
+  if(acts.onUp){ wrap.appendChild(iconBtn('↑', acts.onUp)); }
+  if(acts.onDown){ wrap.appendChild(iconBtn('↓', acts.onDown)); }
+  if(acts.onEdit){ wrap.appendChild(iconBtn('✎', acts.onEdit)); }
+  if(acts.onDelete){ wrap.appendChild(iconBtn('✕', acts.onDelete)); }
+  if(wrap.children.length) row.appendChild(wrap);
+  return row;
+}
+function iconBtn(txt, fn){
+  const b = document.createElement('div');
+  b.className = 'ricon'; b.textContent = txt;
+  b.onclick = (e)=>{ e.stopPropagation(); fn(); };
+  return b;
+}
+
+async function swapOrder(colRef, docs, i, j){
+  const a = docs[i], b = docs[j];
+  const batch = db.batch();
+  batch.update(colRef.doc(a.id), {order: b.data().order});
+  batch.update(colRef.doc(b.id), {order: a.data().order});
+  await batch.commit();
+  renderSelectView();
+}
+
+// ---- Ad ekle / düzenle modalı ----
+function openNameModal(title, initial, onSave){
+  const modal = document.getElementById('nameModal');
+  document.getElementById('nameModalTitle').textContent = title;
+  const input = document.getElementById('nameModalInput');
+  input.value = initial;
+  modal.style.display = 'flex';
+  const save = ()=>{
+    const v = input.value.trim();
+    if(!v) return;
+    modal.style.display = 'none';
+    onSave(v);
+  };
+  document.getElementById('nameSaveBtn').onclick = save;
+  document.getElementById('nameCancelBtn').onclick = ()=> modal.style.display='none';
+  input.focus();
+}
+
+// ---- Tag ekle/düzenle modalı (kW, temel tipi, Ön/Arka rulman kodu) ----
+function openTagModal(title, initial, onSave){
+  const modal = document.getElementById('tagModal');
+  document.getElementById('tagModalTitle').textContent = title;
+  document.getElementById('tagModalName').value = initial.name || '';
+  document.getElementById('tagModalKw').value = initial.kw || '';
+  document.getElementById('tagModalFoundation').value = initial.foundation || 'rijit';
+  document.getElementById('tagModalBearingOn').value = initial.bearingOn || '';
+  document.getElementById('tagModalBearingArka').value = initial.bearingArka || '';
+  modal.style.display = 'flex';
+  const save = ()=>{
+    const name = document.getElementById('tagModalName').value.trim();
+    if(!name) return;
+    const kw = parseFloat(document.getElementById('tagModalKw').value) || null;
+    const foundation = document.getElementById('tagModalFoundation').value;
+    const bearingOn = document.getElementById('tagModalBearingOn').value.trim() || null;
+    const bearingArka = document.getElementById('tagModalBearingArka').value.trim() || null;
+    modal.style.display = 'none';
+    onSave({name, kw, foundation, bearingOn, bearingArka});
+  };
+  document.getElementById('tagSaveBtn').onclick = save;
+  document.getElementById('tagCancelBtn').onclick = ()=> modal.style.display='none';
+  document.getElementById('tagModalName').focus();
+}
+
+// ---- ISO 10816 sınıf ve değerlendirme ----
+function isoClass(kw, foundation){
+  if(!kw) return null;
+  if(kw <= 15) return 'I';
+  if(kw <= 75) return 'II';
+  return foundation === 'esnek' ? 'IV' : 'III';
+}
+// Zone sınırları (mm/s RMS): [A/B sınırı, B/C sınırı, C/D sınırı]
+const ISO_ZONES = {
+  'I':  [0.71, 1.8, 4.5],
+  'II': [1.12, 2.8, 7.1],
+  'III':[1.8,  4.5, 11.2],
+  'IV': [2.8,  7.1, 18.0]
+};
+function isoEvaluate(rmsVelocity, cls){
+  if(!cls || !ISO_ZONES[cls]) return null;
+  const [ab, bc, cd] = ISO_ZONES[cls];
+  if(rmsVelocity <= ab) return {zone:'A', label:'İyi', color:'#3dffa0'};
+  if(rmsVelocity <= bc) return {zone:'B', label:'Kabul Edilebilir', color:'#5ec8ff'};
+  if(rmsVelocity <= cd) return {zone:'C', label:'Uygunsuz', color:'#ffb238'};
+  return {zone:'D', label:'Tehlikeli', color:'#ff5d5d'};
+}
+
+// ---- Silme onayı ("sil" yazarak) ----
+function confirmDelete(type, id, name){
+  pendingDelete = {type, id, name};
+  const modal = document.getElementById('deleteModal');
+  document.getElementById('deleteModalTitle').textContent =
+    (type==='unit' ? 'Üniteyi sil' : 'Tag sil') + ': ' + name;
+  document.getElementById('deleteModalText').textContent =
+    (type==='unit'
+      ? 'Bu ünitenin altındaki tüm taglar ve ölçümler de kalıcı olarak silinecek.'
+      : 'Bu tag altındaki tüm ölçümler de kalıcı olarak silinecek.') +
+    ' Onaylamak için kutuya "sil" yazın.';
+  const input = document.getElementById('deleteConfirmInput');
+  input.value = '';
+  const btn = document.getElementById('deleteConfirmBtn');
+  btn.disabled = true;
+  input.oninput = ()=>{ btn.disabled = input.value.trim().toLowerCase() !== 'sil'; };
+  modal.style.display = 'flex';
+  document.getElementById('deleteCancelBtn').onclick = ()=>{ modal.style.display='none'; pendingDelete=null; };
+  btn.onclick = doPendingDelete;
+}
+
+async function deleteCollectionDocs(colRef){
+  const snap = await colRef.get();
+  const batch = db.batch();
+  snap.docs.forEach(d=>batch.delete(d.ref));
+  if(!snap.empty) await batch.commit();
+}
+
+async function doPendingDelete(){
+  if(!pendingDelete) return;
+  const {type, id} = pendingDelete;
+  document.getElementById('deleteModal').style.display = 'none';
+  if(type === 'unit'){
+    const tagsSnap = await tagsCol(id).get();
+    for(const tDoc of tagsSnap.docs){
+      await deleteCollectionDocs(measCol(id, tDoc.id));
+      await tDoc.ref.delete();
+    }
+    await unitsCol().doc(id).delete();
+  } else {
+    await deleteCollectionDocs(measCol(selUnit.id, id));
+    await tagsCol(selUnit.id).doc(id).delete();
+  }
+  pendingDelete = null;
+  renderSelectView();
+}
+
+// ---- Ön/Arka nokta seçildikten sonra ölçüm ekranına geçiş ----
+async function choosePoint(point){
+  selPoint = point;
+  document.getElementById('selectView').style.display = 'none';
+  document.getElementById('statusView').style.display = 'block';
+  showMain();
+  document.getElementById('velX').textContent = '—';
+  document.getElementById('velY').textContent = '—';
+  document.getElementById('velZ').textContent = '—';
+  ['X','Y','Z'].forEach(ax=>{ const el=document.getElementById('verdict'+ax); el.style.display='none'; el.textContent=''; });
+  document.getElementById('pointCrumbLabel').textContent =
+    selUnit.name + ' › ' + selTag.name + ' › ' + (point==='on'?'Ön':'Arka');
+  document.getElementById('rpmInput').value = '';
+  await loadTrend();
+}
+
+function backToSelect(){
+  selPoint = null;
+  document.getElementById('statusView').style.display = 'none';
+  document.getElementById('selectView').style.display = 'block';
+  renderSelectView();
+}
+
+// ---- Ölçümü Firestore'a kaydet (downsample edilmiş spektrum ile) ----
+function downsampleSpectrum(freqs, values, targetPoints, fLow, fHigh){
+  const idxLow = freqs.findIndex(f=>f>=fLow);
+  let idxHigh = freqs.length-1;
+  for(let i=freqs.length-1;i>=0;i--){ if(freqs[i]<=fHigh){ idxHigh=i; break; } }
+  const start = idxLow<0?0:idxLow;
+  const n = idxHigh - start + 1;
+  if(n<=targetPoints){
+    const f=[], v=[];
+    for(let i=start;i<=idxHigh;i++){ f.push(Math.round(freqs[i]*10)/10); v.push(Math.round(values[i]*1e6)/1e6); }
+    return {f, v};
+  }
+  const binSize = n/targetPoints;
+  const f=[], v=[];
+  for(let b=0;b<targetPoints;b++){
+    const from = start + Math.floor(b*binSize);
+    const to = start + Math.floor((b+1)*binSize);
+    let sum=0, cnt=0, favg=0;
+    for(let i=from;i<to && i<=idxHigh;i++){ sum+=values[i]; favg+=freqs[i]; cnt++; }
+    if(cnt===0) continue;
+    f.push(Math.round((favg/cnt)*10)/10);
+    v.push(Math.round((sum/cnt)*1e6)/1e6);
+  }
+  return {f, v};
+}
+
+async function saveMeasurementToFirestore(){
+  if(!selUnit || !selTag || !selPoint) return;
+  const rpmVal = parseFloat(document.getElementById('rpmInput').value) || null;
+  const cls = isoClass(selTag.kw, selTag.foundation);
+  const doc = {
+    point: selPoint,
+    rpm: rpmVal,
+    isoClass: cls,
+    timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+    velRMS: {},
+    isoZone: {},
+    velSpectrum: {},
+    accelPSD: {}
+  };
+  for(const ax of ['X','Y','Z']){
+    const {freqs, psd, velAsd, rmsVelocity} = axisSpectra[ax];
+    doc.velRMS[ax] = Math.round(rmsVelocity*1000)/1000;
+    const v = isoEvaluate(rmsVelocity, cls);
+    doc.isoZone[ax] = v ? v.zone : null;
+    doc.velSpectrum[ax] = downsampleSpectrum(freqs, velAsd, 300, VEL_F_LOW, VEL_F_HIGH);
+    doc.accelPSD[ax] = downsampleSpectrum(freqs, psd, 300, 0, SAMPLE_RATE_HZ/2);
+  }
+  try{
+    await measCol(selUnit.id, selTag.id).add(doc);
+    log('Ölçüm Firestore kaydı yapıldı ('+(selPoint==='on'?'Ön':'Arka')+').');
+    await loadTrend();
+  }catch(err){
+    log('Firestore kayıt hatası: ' + err.message, 'err');
+  }
+}
+
+// ---- Trend: seçili nokta için geçmiş ölçümleri yükle/göster ----
+async function loadTrend(){
+  const content = document.getElementById('trendContent');
+  content.innerHTML = '<div class="trend-empty">Yükleniyor…</div>';
+  try{
+    const snap = await measCol(selUnit.id, selTag.id)
+      .where('point','==',selPoint).orderBy('timestamp','asc').limitToLast(30).get();
+    if(snap.empty){
+      content.innerHTML = '<div class="trend-empty">Bu nokta için henüz kayıtlı ölçüm yok.</div>';
+      if(trendChart){ trendChart.destroy(); trendChart=null; }
+      return;
+    }
+    const labels=[], sx=[], sy=[], sz=[];
+    snap.docs.forEach(d=>{
+      const m = d.data();
+      const ts = m.timestamp ? m.timestamp.toDate() : new Date();
+      labels.push(ts.toLocaleDateString('tr-TR', {day:'2-digit', month:'2-digit'}));
+      sx.push(m.velRMS ? m.velRMS.X : null);
+      sy.push(m.velRMS ? m.velRMS.Y : null);
+      sz.push(m.velRMS ? m.velRMS.Z : null);
+    });
+    content.innerHTML = '<canvas id="trendCanvas" height="160"></canvas>';
+    if(trendChart) trendChart.destroy();
+    trendChart = new Chart(document.getElementById('trendCanvas'), {
+      type:'line',
+      data:{ labels, datasets:[
+        {label:'X', data:sx, borderColor:'#ff6b6b', borderWidth:1.5, pointRadius:2, tension:0},
+        {label:'Y', data:sy, borderColor:'#5ec8ff', borderWidth:1.5, pointRadius:2, tension:0},
+        {label:'Z', data:sz, borderColor:'#3dffa0', borderWidth:1.5, pointRadius:2, tension:0}
+      ]},
+      options:{
+        responsive:true, animation:false,
+        scales:{
+          x:{ ticks:{color:'#7c8a80', font:{family:'JetBrains Mono', size:10}}, grid:{color:'#1a221c'} },
+          y:{ title:{display:true, text:'mm/s', color:'#7c8a80'}, ticks:{color:'#7c8a80', font:{family:'JetBrains Mono', size:10}}, grid:{color:'#1a221c'} }
+        },
+        plugins:{ legend:{ labels:{ color:'#d9e4dc', font:{family:'JetBrains Mono', size:11} } } }
+      }
+    });
+  }catch(err){
+    content.innerHTML = '<div class="trend-empty">Trend yüklenemedi: '+err.message+'</div>';
+  }
+}
 
 // ============================================================
 // LOG / STATUS UI
@@ -396,6 +925,7 @@ async function runMeasurement(){
     document.getElementById('btnExport').disabled = false;
     setStatus(`Bağlı: ${device.name || 'WS300'} — ölçüm tamam`, 'on');
     log('Ölçüm tamamlandı.');
+    await saveMeasurementToFirestore();
   }catch(err){
     log('Ölçüm hatası: ' + err.message, 'err');
     setStatus('Ölçüm başarısız', 'err');
@@ -572,20 +1102,31 @@ let axisSpectra = { X:null, Y:null, Z:null }; // {freqs, psd, velAsd, rmsVelocit
 let currentDetailAxis = null;
 
 function computeResults(){
+  const cls = selTag ? isoClass(selTag.kw, selTag.foundation) : null;
   for(const ax of ['X','Y','Z']){
     const s = axisSamples[ax];
-    let sumSq=0, peak=0;
-    for(let i=0;i<s.length;i++){ sumSq+=s[i]*s[i]; peak=Math.max(peak, Math.abs(s[i])); }
-    const rms = Math.sqrt(sumSq/s.length);
-    document.getElementById('rms'+ax).textContent = rms.toFixed(4);
-    document.getElementById('pk'+ax).textContent = 'tepe: ' + peak.toFixed(4) + ' g';
-
     const {freqs, psd} = computePSD(s, SAMPLE_RATE_HZ);
     const {velAsd, rmsVelocity} = velocitySpectrumFromAccelPSD(freqs, psd, VEL_F_LOW, VEL_F_HIGH);
     axisSpectra[ax] = {freqs, psd, velAsd, rmsVelocity};
-    document.getElementById('vel'+ax).textContent = 'hız: ' + rmsVelocity.toFixed(2) + ' mm/s';
+    document.getElementById('vel'+ax).textContent = rmsVelocity.toFixed(2);
+
+    const verdictEl = document.getElementById('verdict'+ax);
+    const v = isoEvaluate(rmsVelocity, cls);
+    if(v){
+      verdictEl.style.display = 'inline-block';
+      verdictEl.style.color = v.color;
+      verdictEl.style.background = v.color + '22';
+      verdictEl.style.border = '1px solid ' + v.color;
+      verdictEl.textContent = v.label;
+    } else {
+      verdictEl.style.display = 'none';
+      verdictEl.textContent = '';
+    }
 
     document.querySelector('.axis-card.'+ax.toLowerCase()).classList.add('has-data');
+  }
+  if(!cls){
+    log('Bu tag için kW/temel tipi tanımlı değil — ISO 10816 değerlendirmesi yapılamadı. Tag düzenlemesinden ekleyebilirsiniz.', 'warn');
   }
 }
 
@@ -680,6 +1221,9 @@ function bytesToHex(bytes){
 }
 
 log('Hazır. "Cihaza Bağlan" ile başlayın.');
+
+document.getElementById('btnBackToSelect').addEventListener('click', backToSelect);
+renderSelectView();
 </script>
 </body>
 </html>

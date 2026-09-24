@@ -369,11 +369,6 @@ const db = firebase.firestore();
   </div>
 
   <div class="panel">
-    <div class="panel-title">Zaman Domeni <span class="tag">g vs ms</span></div>
-    <canvas id="chartDetailTime" height="220"></canvas>
-  </div>
-
-  <div class="panel">
     <div class="panel-title">Hız Spektrumu <span class="tag">mm/s/√Hz vs Hz — genel şiddet (ISO 10816)</span></div>
     <canvas id="chartDetailVel" height="220"></canvas>
   </div>
@@ -417,9 +412,10 @@ const SAMPLE_RATE_HZ = 12800;
 let device=null, server=null;
 let axisBuffers = { X:[], Y:[], Z:[] };   // her biri {seq, bytes}
 let axisExpectedCount = { X:null, Y:null, Z:null };
+let lastPacketTime = { X:0, Y:0, Z:0 }; // her eksenin son gerçek veri paketinin geldiği an (Date.now())
 let axisSamples = { X:null, Y:null, Z:null }; // Float32Array g değerleri
 let measuring = false;
-let charts = {time:null, vel:null, psd:null};
+let charts = {vel:null, psd:null};
 let activeNotifyChars = []; // aktif bildirim aboneliklerini takip eder (tekrar denemede temizlemek için)
 let triggerTime = null; // tanı: tetik yazıldığı an (performance.now())
 let firstDataSeenAxis = { X:false, Y:false, Z:false }; // tanı: her eksenin ilk veri paketi geldi mi
@@ -918,6 +914,7 @@ async function runMeasurement(){
   axisExpectedCount = { X:null, Y:null, Z:null };
   axisSamples = { X:null, Y:null, Z:null };
   firstDataSeenAxis = { X:false, Y:false, Z:false };
+  lastPacketTime = { X:0, Y:0, Z:0 };
   triggerTime = null;
   setProgress(0);
 
@@ -976,9 +973,18 @@ function onNotify(event){
 
   const elapsedMs = triggerTime !== null ? Math.round(performance.now()-triggerTime) : -1;
   // Tanı: her bildirimin ham hex içeriği ve tetikten bu yana geçen süre.
-  // Bu, cihazın aynı byte'ı mı tekrar gönderdiğini yoksa kodun aynı
-  // bildirimi mi yanlış yorumladığını ayırt etmek için eklendi.
   const rawHex = bytesToHex(new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength));
+
+  // Tetik yazılmadan ÖNCE gelen bir bildirim varsa, bu kesinlikle bağlantının
+  // önceki durumundan (bir önceki başarısız/eksik denemeden ya da bağlantı
+  // kurulurken karakteristiğin önbelleğe alınmış son değerinden) kalma "eski"
+  // bir bildirimdir — gerçek ölçümle ilgisi yok. Buna güvenip ölçümü erken
+  // "tamamlandı" saymak, "1 paket geldi" gibi eksik verilerle sonuçlanan asıl
+  // sorunun kaynağıydı. Bu yüzden tetikten önceki her şeyi görmezden geliyoruz.
+  if(triggerTime === null){
+    log(`(göz ardı edildi — tetikten önce gelen eski bildirim: ${info.axis} ${info.role}, ham=0x${rawHex})`, 'warn');
+    return;
+  }
 
   if(info.role === 'count'){
     // Tek byte, SIGNED (int8): 127 üstü paket sayıları negatif olarak
@@ -999,6 +1005,7 @@ function onNotify(event){
     // referans yerine kopya alıyoruz (slice) ki veri bozulmasın.
     const bytes = new Uint8Array(dv.buffer.slice(dv.byteOffset+2, dv.byteOffset+dv.byteLength));
     axisBuffers[info.axis].push({seq, bytes});
+    lastPacketTime[info.axis] = Date.now(); // tamamlanma kontrolü için: son gerçek paketin ne zaman geldiği
     updateProgressFromBuffers();
   }
 }
@@ -1010,13 +1017,22 @@ function updateProgressFromBuffers(){
   setProgress(pct);
 }
 
+// Bir ekseni sadece "count bildirimi + paket sayısı eşleşti" diye bitmiş
+// saymıyoruz: count değeri (yukarıdaki filtreye rağmen) yine de düşük/erken
+// gelmiş olabilir. Bu yüzden paket sayısı beklenene ULAŞTIKTAN sonra da en az
+// QUIET_MS boyunca o eksene yeni paket gelmediğini doğruluyoruz — hâlâ paket
+// geliyorsa, count'un düşük olduğu anlaşılır ve beklemeye devam edilir.
+const QUIET_MS = 250;
+
 function waitForCompletion(timeoutMs){
   return new Promise((resolve, reject)=>{
     const start = Date.now();
     const iv = setInterval(()=>{
+      const now = Date.now();
       const done = ['X','Y','Z'].every(ax=>{
         const exp = axisExpectedCount[ax];
-        return exp !== null && axisBuffers[ax].length === exp+1;
+        if(exp === null || axisBuffers[ax].length < exp+1) return false;
+        return (now - lastPacketTime[ax]) >= QUIET_MS;
       });
       if(done){ clearInterval(iv); resolve(); return; }
       if(Date.now()-start > timeoutMs){
@@ -1186,16 +1202,7 @@ function showDetail(ax){
   window.scrollTo(0,0);
 
   const color = AXIS_COLORS[ax];
-  const s = axisSamples[ax];
   const {freqs, psd, velAsd} = axisSpectra[ax];
-
-  const timePts = decimate(Array.from(s), 1500).map(p=>({x:(p.x/SAMPLE_RATE_HZ*1000), y:p.y}));
-  if(charts.time) charts.time.destroy();
-  charts.time = new Chart(document.getElementById('chartDetailTime'), {
-    type:'line',
-    data:{ datasets:[{ label:ax, data:timePts, borderColor:color, borderWidth:1.2, pointRadius:0, tension:0 }] },
-    options: chartOptions('ms', 'g')
-  });
 
   const velPts = decimate(Array.from(velAsd), 1500).map(p=>({x:freqs[p.x], y:p.y}));
   if(charts.vel) charts.vel.destroy();

@@ -3,7 +3,7 @@
 // yapmak için basit bir "stale-while-revalidate" önbellekleme uygular.
 // Sadece kendi kaynağımızdaki (GitHub Pages) dosyaları önbellekler — Firebase/
 // Firestore gibi dış istekler servis worker'a hiç girmeden doğrudan ağa gider.
-const CACHE_NAME = 'ws300-cache-v2';
+const CACHE_NAME = 'ws300-cache-v3';
 const APP_SHELL = [
   './index.html',
   './manifest.json',

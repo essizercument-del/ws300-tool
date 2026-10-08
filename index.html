@@ -5462,6 +5462,9 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
       <div class="rv-bottom" data-ax="${ax}"></div>
       ${bearingSectionHtml}
       <h3 style="font-size:13px; margin:16px 0 6px;">İvme PSD (G²/Hz)</h3>
+      <div style="font-size:11.5px; color:#555; background:#f7f7f7; border:1px solid #e2e2e2; border-radius:6px; padding:8px 10px; margin:4px 0 8px; line-height:1.5;">
+    <b>İvme PSD grafiklerinin okunması:</b> Geniş banttaki çok sayıda küçük "halı" tipi tepe normaldir, tek başına arıza anlamına gelmez. Karar, rulman arıza frekansları ve harmoniklerinin ölçümde gerçekten tepe olarak görünüp görünmediğine bakılarak verilir (50 Hz şebeke ve devir harmonikleri sayılmaz); aynı arıza PSD ve Zarf'ta birlikte görünürse bulgu güçlenir. Nihai sonuç "Genel Değerlendirme"deki Seviye (1–4) ve gerekçelerdir.
+  </div>
       <div class="rv-top bm-chips" data-kind="psd"></div>
       ${zoomToolbar(ax,'psd')}
       <div style="position:relative; height:240px;"><canvas class="chPsd" data-ax="${ax}"></canvas></div>
@@ -5518,9 +5521,6 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
 
 
   <h2 style="font-size:15px; margin:20px 0 4px;">Spektrum Grafikleri</h2>
-  <div style="font-size:11.5px; color:#555; background:#f7f7f7; border:1px solid #e2e2e2; border-radius:6px; padding:8px 10px; margin-bottom:12px; line-height:1.5;">
-    <b>İvme PSD grafiklerinin okunması:</b> Geniş banttaki çok sayıda küçük "halı" tipi tepe normaldir, tek başına arıza anlamına gelmez. Karar, rulman arıza frekansları ve harmoniklerinin ölçümde gerçekten tepe olarak görünüp görünmediğine bakılarak verilir (50 Hz şebeke ve devir harmonikleri sayılmaz); aynı arıza PSD ve Zarf'ta birlikte görünürse bulgu güçlenir. Nihai sonuç "Genel Değerlendirme"deki Seviye (1–4) ve gerekçelerdir.
-  </div>
 
   <div style="display:flex; gap:4px;">${tabsHtml}</div>
   ${panelsHtml}

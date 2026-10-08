@@ -590,13 +590,18 @@ const db = firebase.firestore();
   </div>
 
   <div class="panel" id="historyVelPanel" style="display:none">
-    <div class="panel-title">Hız Spektrumu Karşılaştırma <span class="tag">mm/s vs Hz</span></div>
-    <div style="position:relative; height:220px;"><canvas id="chartHistoryVel"></canvas></div>
+    <div class="panel-title">Hız Spektrumu Karşılaştırma <span class="tag">mm/s vs Hz</span> <button class="btn-mini" id="btnResetZoomHistVel" type="button">Yakınlaştırmayı sıfırla</button></div>
+    <div class="vp-controls" id="histVelControls"></div>
+    <div style="position:relative; height:240px;"><canvas id="chartHistoryVel"></canvas></div>
+    <div class="vp-readout" id="histVelReadout"></div>
+    <div style="font-size:10px; color:var(--text-dim); text-align:center; margin:4px 0 2px;">dokun: değer oku · iki parmak: yakınlaştır · yana kaydır: gezin · çift dokun: sıfırla</div>
+    <div id="histVelPeaks"></div>
   </div>
 
   <div class="panel" id="historyPsdPanel" style="display:none">
-    <div class="panel-title">İvme PSD Karşılaştırma <span class="tag">G²/Hz vs Hz</span></div>
+    <div class="panel-title">İvme PSD Karşılaştırma <span class="tag">G²/Hz vs Hz</span> <button class="btn-mini" id="btnResetZoomHistPsd" type="button">Yakınlaştırmayı sıfırla</button></div>
     <div style="position:relative; height:220px;"><canvas id="chartHistoryPSD"></canvas></div>
+    <div style="font-size:10px; color:var(--text-dim); text-align:center; margin:4px 0 2px;">iki parmak: yakınlaştır · yana kaydır: gezin · çift dokun: sıfırla</div>
   </div>
 
   <div class="panel" id="historyTablePanel" style="display:none">
@@ -1858,6 +1863,8 @@ function renderHistoryCompare(){
     data:{ datasets: buildDatasets('accelPSD') },
     options: chartOptions('Hz', 'G²/Hz', true)
   });
+  setupHistVelPanel(selectedDocs);
+  setupHistPsdZoom();
 
   const rows = selectedDocs.map((m,i)=>{
     const rms = m.velRMS ? m.velRMS[historyAxis] : null;
@@ -1874,6 +1881,12 @@ function renderHistoryCompare(){
 }
 
 document.getElementById('btnOpenHistory').addEventListener('click', showHistoryView);
+document.getElementById('btnResetZoomHistVel').addEventListener('click', ()=>{ if(historyCharts.vel) resetZoom(historyCharts.vel, 0, VEL_F_HIGH); });
+document.getElementById('btnResetZoomHistPsd').addEventListener('click', ()=>{
+  const c = historyCharts.psd; if(!c) return;
+  const t = zoomTargets.get(document.getElementById('chartHistoryPSD'));
+  resetZoom(c, 0, t ? t.baseMax : SAMPLE_RATE_HZ/2);
+});
 document.getElementById('btnHistoryBack').addEventListener('click', ()=>{ history.back(); });
 document.querySelectorAll('.hist-axis-btn').forEach(btn=>{
   btn.addEventListener('click', ()=>{
@@ -3280,11 +3293,11 @@ function velShaftHz(rpm){
 // Bir frekansı devir katına göre sınıflandırır → {order, text, cls}
 // Tolerans Hz cinsinden: spektrum çözünürlüğü (tam çözünürlükte 1 Hz, karşılaştırma
 // modunda ≈3.3 Hz'lik kutular) ve devir tahmini belirsizliği (%2) birlikte hesaba katılır.
-function velOrderInfo(f, f1){
+function velOrderInfo(f, f1, binHzOverride){
   if(!f1) return { order:null, text:'RPM girilmemiş', cls:'' };
   const r = f / f1;
   const n = Math.max(1, Math.round(r));
-  const binHz = (velPanelState && velPanelState.compare && velPanelState.prevPts) ? 3.5 : 1.5;
+  const binHz = binHzOverride || ((velPanelState && velPanelState.compare && velPanelState.prevPts) ? 3.5 : 1.5);
   const tolHz = Math.max(binHz, 0.02 * n * f1);
   if(Math.abs(f - n*f1) <= tolHz){
     if(n === 1) return { order:r, text:'1× devir — dengesizlik belirtisi', cls:'h1' };
@@ -3525,6 +3538,182 @@ function setupVelPanel(ax){
   velRenderControls();
   velRenderReadout();
   velRenderPeaks();
+}
+
+// ============================================================
+// GEÇMİŞ ÖLÇÜMLER — hız spektrumu paneli (canlı ekrandaki özelliklerin
+// kayıtlı veriye uyarlanmış hali). Kayıtlı spektrumlar ≈3.3 Hz'lik kutu
+// ortalamasıdır; bu yüzden enerji payı gösterilmez ve devir eşleşmesinde
+// tolerans kutu genişliğine göre geniş tutulur.
+// ============================================================
+let histVelState = null; // {docs, labels, f1, cursorF, showOrders}
+
+function histShaftHz(m){
+  if(!m) return null;
+  if(m.shaftHz && isFinite(m.shaftHz)) return m.shaftHz;
+  return m.rpm ? m.rpm/60 : null;
+}
+
+function histOrderMarkers(){
+  const s = histVelState;
+  if(!s || !s.f1 || !s.showOrders) return [];
+  const out = [];
+  for(let h=1; h<=10 && h*s.f1<=VEL_F_HIGH; h++){
+    out.push({ freq: h*s.f1, label: h+'×', color: h===1 ? '#ff9f43' : (h===2 ? '#feca57' : '#6c7a70') });
+  }
+  return out;
+}
+
+function histSetRange(min, max){
+  const c = historyCharts.vel; if(!c) return;
+  min = Math.max(0, min); max = Math.min(VEL_F_HIGH, max);
+  if(max - min < 8){ const m=(min+max)/2; min=m-4; max=m+4; }
+  c.options.scales.x.min = min; c.options.scales.x.max = max;
+  autoscaleYVisible(c, min, max);
+  c.update('none');
+}
+
+function histNearest(pts, f){
+  if(!pts || !pts.length) return null;
+  let lo=0, hi=pts.length-1;
+  while(hi-lo>1){ const m=(lo+hi)>>1; if(pts[m].x < f) lo=m; else hi=m; }
+  return Math.abs(pts[lo].x-f) <= Math.abs(pts[hi].x-f) ? lo : hi;
+}
+
+function histSetCursor(f){
+  const s = histVelState; const c = historyCharts.vel;
+  if(!s || !c) return;
+  const ref = c.data.datasets[0] ? c.data.datasets[0].data : [];
+  let k = histNearest(ref, f);
+  if(k == null){ return; }
+  for(let j=Math.max(0,k-1); j<=Math.min(ref.length-1,k+1); j++){ if(ref[j].y > ref[k].y) k = j; }
+  s.cursorF = ref[k].x;
+  c.options.plugins.velCursor = { x: ref[k].x, y: ref[k].y };
+  c.update('none');
+  histRenderReadout();
+}
+
+function histRenderReadout(){
+  const el = document.getElementById('histVelReadout');
+  const s = histVelState; const c = historyCharts.vel;
+  if(!el || !s || !c) return;
+  if(s.cursorF == null){
+    el.innerHTML = '<span style="color:var(--text-dim)">Değer okumak için grafiğe dokunun.</span>';
+    return;
+  }
+  const f = s.cursorF;
+  const info = velOrderInfo(f, s.f1, 3.5);
+  const vals = c.data.datasets.map(ds=>{
+    const k = histNearest(ds.data, f);
+    const y = k == null ? null : ds.data[k].y;
+    return '<span style="color:'+ds.borderColor+'">'+ds.label+': <b>'+(y==null?'—':y.toFixed(2))+'</b></span>';
+  }).join(' · ');
+  el.innerHTML =
+    '<span class="vr-main">'+f.toFixed(1)+' Hz'+(info.order!=null ? ' · '+info.order.toFixed(2)+'× devir' : '')+'</span>'+
+    '<div style="font-size:11.5px;">'+vals+' <span style="color:var(--text-dim)">mm/s</span></div>'+
+    '<div class="vr-info '+info.cls+'">'+info.text+'</div>';
+}
+
+function histRenderPeaks(){
+  const s = histVelState; const el = document.getElementById('histVelPeaks');
+  const c = historyCharts.vel;
+  if(!el || !s || !c || !c.data.datasets.length){ if(el) el.innerHTML=''; return; }
+  const ds = c.data.datasets[0];
+  const pts = ds.data;
+  const cand = [];
+  for(let k=1;k<pts.length-1;k++){
+    if(pts[k].x < VEL_F_LOW) continue;
+    if(pts[k].y > 0 && pts[k].y >= pts[k-1].y && pts[k].y > pts[k+1].y) cand.push(k);
+  }
+  cand.sort((a,b)=>pts[b].y-pts[a].y);
+  const vmax = cand.length ? pts[cand[0]].y : 0;
+  const peaks = [];
+  for(const k of cand){
+    if(pts[k].y < vmax*0.08) break;
+    if(peaks.some(p=>Math.abs(p.x-pts[k].x) < 6)) continue;
+    peaks.push(pts[k]);
+    if(peaks.length >= 5) break;
+  }
+  if(!peaks.length){ el.innerHTML=''; return; }
+  const rows = peaks.map(p=>{
+    const info = velOrderInfo(p.x, s.f1, 3.5);
+    return '<tr data-f="'+p.x+'"><td class="num">'+p.x.toFixed(1)+'</td><td class="num">'+p.y.toFixed(2)+'</td>'+
+      '<td class="num">'+(info.order!=null?info.order.toFixed(2)+'×':'—')+'</td><td class="vr-info '+info.cls+'">'+info.text+'</td></tr>';
+  }).join('');
+  el.innerHTML =
+    '<div class="vp-sub">En güçlü 5 tepe — <span style="color:'+ds.borderColor+'; margin:0">'+ds.label+'</span> <span>satıra dokun → o tepeye git</span></div>'+
+    '<table class="vp-table"><thead><tr><th>Hz</th><th>mm/s</th><th>Devir</th><th>Yorum</th></tr></thead><tbody>'+rows+'</tbody></table>'+
+    '<div class="vp-note">'+(s.f1 ? 'Devir frekansı: '+s.f1.toFixed(2)+' Hz ('+Math.round(s.f1*60)+' rpm, ilk seçilen ölçümden). ' : 'Bu ölçümde RPM kayıtlı değil, devir yorumu yapılamıyor. ')+
+    'Kayıtlı spektrumlar ≈3 Hz çözünürlükte (kutu ortalaması) saklandığı için tepe değerleri canlı ölçüm ekranındakinden düşük görünebilir.</div>';
+  el.querySelectorAll('tr[data-f]').forEach(tr=>{
+    tr.addEventListener('click', ()=>{
+      const f = parseFloat(tr.dataset.f);
+      const half = Math.max(15, f*0.15);
+      histSetRange(f-half, f+half);
+      histSetCursor(f);
+    });
+  });
+}
+
+function histRenderControls(){
+  const s = histVelState; const el = document.getElementById('histVelControls');
+  if(!el || !s) return;
+  const presets = s.f1
+    ? [['Tümü',0,VEL_F_HIGH],['0–4× devir',0,s.f1*4.3],['0–10× devir',0,s.f1*10.5]]
+    : [['Tümü',0,VEL_F_HIGH],['0–100 Hz',0,100],['0–300 Hz',0,300]];
+  let html = presets.map(p=>'<button type="button" class="vp-chip" data-min="'+p[1]+'" data-max="'+p[2]+'">'+p[0]+'</button>').join('');
+  html += '<span class="vp-sep"></span>';
+  html += '<button type="button" class="vp-chip toggle'+(s.showOrders && s.f1?' on':'')+'" id="histOrders"'+(s.f1?'':' disabled')+'>Devir çizgileri</button>';
+  el.innerHTML = html;
+  el.querySelectorAll('.vp-chip[data-min]').forEach(b=>{
+    b.addEventListener('click', ()=> histSetRange(parseFloat(b.dataset.min), parseFloat(b.dataset.max)));
+  });
+  const bo = document.getElementById('histOrders');
+  if(bo) bo.addEventListener('click', ()=>{
+    s.showOrders = !s.showOrders;
+    historyCharts.vel.options.plugins.bearingMarkers = { markers: histOrderMarkers() };
+    historyCharts.vel.update('none'); histRenderControls();
+  });
+}
+
+// renderHistoryCompare() hız grafiğini oluşturduktan sonra çağrılır.
+function setupHistVelPanel(selectedDocs){
+  const c = historyCharts.vel; if(!c) return;
+  const keepOrders = histVelState ? histVelState.showOrders : true;
+  histVelState = { f1: histShaftHz(selectedDocs[0]), cursorF: null, showOrders: keepOrders };
+  c.options.scales.x.min = 0;
+  c.options.scales.x.max = VEL_F_HIGH;
+  c.options.scales.x.ticks.includeBounds = false;
+  c.options.plugins.bearingMarkers = { markers: histOrderMarkers() };
+  c.options.plugins.velCursor = { x:null };
+  c.options.plugins.tooltip = { enabled:false };
+  autoscaleYVisible(c, 0, VEL_F_HIGH);
+  c.update('none');
+  attachZoomPan(c, 'chartHistoryVel', 0, VEL_F_HIGH);
+  const canvas = document.getElementById('chartHistoryVel');
+  if(!canvas.dataset.tapBound){
+    canvas.dataset.tapBound = '1';
+    canvas.addEventListener('charttap', (e)=>{
+      const ch = historyCharts.vel; if(!ch) return;
+      const rect = canvas.getBoundingClientRect();
+      const px = e.detail.clientX - rect.left;
+      if(px < ch.chartArea.left || px > ch.chartArea.right) return;
+      histSetCursor(ch.scales.x.getValueForPixel(px));
+    });
+  }
+  histRenderControls();
+  histRenderReadout();
+  histRenderPeaks();
+}
+
+function setupHistPsdZoom(){
+  const c = historyCharts.psd; if(!c) return;
+  let fMax = 0;
+  c.data.datasets.forEach(ds=>{ if(ds.data.length) fMax = Math.max(fMax, ds.data[ds.data.length-1].x); });
+  if(!fMax) fMax = SAMPLE_RATE_HZ/2;
+  c.options.scales.x.min = 0; c.options.scales.x.max = fMax;
+  c.update('none');
+  attachZoomPan(c, 'chartHistoryPSD', 0, fMax);
 }
 
 function showDetail(ax){

@@ -545,6 +545,7 @@ const db = firebase.firestore();
 
   <div class="panel">
     <div class="panel-title">Rulman Durumu — İvme PSD <span class="tag">G²/Hz vs Hz</span> <button class="btn-mini" id="btnResetZoomPsd" type="button">Yakınlaştırmayı sıfırla</button></div>
+    <div class="vp-controls" id="psdBmChips"></div>
     <div style="position:relative; height:220px;"><canvas id="chartDetailPSD"></canvas></div>
     <div style="font-size:10px; color:var(--text-dim); text-align:center; margin:4px 0 2px;">tekerlek / iki parmak ile yakınlaştır · sürükleyerek kaydır · çift tıkla/dokun ile sıfırla</div>
   </div>
@@ -564,6 +565,7 @@ const db = firebase.firestore();
       <input type="number" id="envFHigh" value="5500" step="100">
       <button class="btn-mini" id="btnEnvRecalc" type="button">Yeniden Hesapla</button>
     </div>
+    <div class="vp-controls" id="envBmChips"></div>
     <div style="position:relative; height:220px;"><canvas id="chartDetailEnv"></canvas></div>
     <div style="font-size:10px; color:var(--text-dim); text-align:center; margin:4px 0 2px;">tekerlek / iki parmak ile yakınlaştır · sürükleyerek kaydır · çift tıkla/dokun ile sıfırla</div>
     <div id="envelopeAnalysisText" style="font-size:13px; line-height:1.6; color:var(--text); margin-top:8px;"></div>
@@ -649,7 +651,29 @@ let lastPacketTime = { X:0, Y:0, Z:0 }; // her eksenin son gerçek veri paketini
 let axisSamples = { X:null, Y:null, Z:null }; // Float32Array g değerleri
 let measuring = false;
 let charts = {vel:null, psd:null, env:null};
-let bearingMarkerVisible = {}; // her rulman arıza frekansı çizgisinin gösterilip gösterilmeyeceği (checkbox ile)
+let bearingMarkerVisible = {}; // PSD grafiğindeki rulman arıza frekansı çizgileri (grafiğin üstündeki düğmelerle)
+let envMarkerVisible = {};     // Zarf grafiğindeki çizgiler — PSD'den bağımsız
+
+// Bir grafiğin hemen üstüne BPFO/BPFI/BSF/FTF aç/kapa düğmeleri çizer.
+// state: {BPFO:true,...} — düğmeye basınca değişir, onChange() grafiği günceller.
+function renderBmChips(containerId, freqs, state, onChange){
+  const el = document.getElementById(containerId);
+  if(!el) return;
+  if(!freqs){ el.innerHTML = ''; el.style.display = 'none'; return; }
+  el.style.display = 'flex';
+  el.innerHTML = '<span style="font-size:10.5px; color:var(--text-dim); margin-right:2px;">Rulman çizgileri:</span>' +
+    Object.keys(freqs).map(key=>{
+      const on = !!state[key], col = BEARING_FAULT_COLORS[key];
+      return '<button type="button" class="vp-chip" data-key="'+key+'" style="'+(on ? 'border-color:'+col+'; color:'+col+';' : 'opacity:.55;')+'">'+(on?'● ':'○ ')+key+'</button>';
+    }).join('');
+  el.querySelectorAll('button[data-key]').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      state[b.dataset.key] = !state[b.dataset.key];
+      renderBmChips(containerId, freqs, state, onChange);
+      onChange();
+    });
+  });
+}
 let pendingQrCode = null; // taranıp hiçbir tag'e bağlanamamış son QR kod metni (tag düzenlemede bağlanabilir)
 let activeNotifyChars = []; // aktif bildirim aboneliklerini takip eder (tekrar denemede temizlemek için)
 let triggerTime = null; // tanı: tetik yazıldığı an (performance.now())
@@ -2057,10 +2081,12 @@ function buildComparisonReportHtml(axesSeries, trend, summaryRows, bearing, char
       <div style="position:relative; height:240px;"><canvas class="chVel" data-ax="${ax}"></canvas></div>
       <div class="rv-bottom" data-ax="${ax}"></div>
       <h3 style="font-size:13px; margin:16px 0 6px;">İvme PSD Karşılaştırma (G²/Hz)</h3>
+      <div class="rv-top bm-chips" data-kind="psd"></div>
       ${zoomToolbar('psd')}
       <div style="position:relative; height:240px;"><canvas class="chPsd" data-ax="${ax}"></canvas></div>
       ${s.env && s.env.length ? `
       <h3 style="font-size:13px; margin:16px 0 6px;">Zarf (Envelope) Spektrumu Karşılaştırma</h3>
+      <div class="rv-top bm-chips" data-kind="env"></div>
       ${zoomToolbar('env')}
       <div style="position:relative; height:240px;"><canvas class="chEnv" data-ax="${ax}"></canvas></div>
 ` : ''}
@@ -2116,7 +2142,6 @@ function buildComparisonReportHtml(axesSeries, trend, summaryRows, bearing, char
   <div style="font-size:11.5px; color:#555; background:#f7f7f7; border:1px solid #e2e2e2; border-radius:6px; padding:8px 10px; margin-bottom:12px; line-height:1.5;">
     Aynı ölçüm noktasının farklı zamanlardaki spektrumları üst üste bindirilmiştir — bir tepenin zamanla büyümesi (özellikle Zarf grafiğinde) erken uyarı için PSD'deki tek bir tepeden daha güvenilir bir işarettir.
   </div>
-  ${bearingCheckboxesHtml ? `<div style="margin-bottom:10px;">${bearingCheckboxesHtml}</div>` : ''}
 
   <div style="display:flex; gap:4px;">${tabsHtml}</div>
   ${panelsHtml}
@@ -2353,8 +2378,20 @@ const TREND = ${JSON.stringify(trend).replace(/</g,'\\u003c')};
 const BEARING_FREQS = ${JSON.stringify(bearing && bearing.freqs ? bearing.freqs : null)};
 const BEARING_COLORS = ${JSON.stringify(BEARING_FAULT_COLORS)};
 const SERIES_COLORS = ${JSON.stringify(HISTORY_COMPARE_COLORS)};
-let bmVisible = {};
-if(BEARING_FREQS){ Object.keys(BEARING_FREQS).forEach(k=>{ bmVisible[k] = true; }); }
+let bmVisible = {};   // PSD çizgileri
+let bmEnvVisible = {}; // Zarf çizgileri — PSD'den bağımsız
+if(BEARING_FREQS){ Object.keys(BEARING_FREQS).forEach(k=>{ bmVisible[k] = true; bmEnvVisible[k] = true; }); }
+function bmChipsHtml(kind){
+  if(!BEARING_FREQS) return '';
+  const st = kind === 'env' ? bmEnvVisible : bmVisible;
+  return '<span style="font-size:11px; color:#888; margin-right:2px;">Rulman çizgileri:</span>' + Object.keys(BEARING_FREQS).map(k=>{
+    const on = !!st[k], col = BEARING_COLORS[k];
+    return '<button type="button" class="rv-chip bmChip" data-kind="'+kind+'" data-key="'+k+'" style="'+(on ? 'border-color:'+col+'; color:'+col+'; background:#fff;' : 'opacity:.5;')+'">'+(on?'● ':'○ ')+k+'</button>';
+  }).join('');
+}
+function renderAllBmChips(){
+  document.querySelectorAll('.bm-chips').forEach(el=>{ el.innerHTML = bmChipsHtml(el.dataset.kind); el.style.display = BEARING_FREQS ? 'flex' : 'none'; });
+}
 
 function formatCompactNumber(v){
   if(v === 0) return '0';
@@ -2408,7 +2445,7 @@ function psdMarkers(){
 function envMarkers(){
   if(!BEARING_FREQS) return [];
   const out = [];
-  Object.keys(BEARING_FREQS).filter(k=>bmVisible[k]).forEach(k=>{
+  Object.keys(BEARING_FREQS).filter(k=>bmEnvVisible[k]).forEach(k=>{
     for(let h=1; h<=3; h++){ out.push({freq:BEARING_FREQS[k]*h, label:h===1?k:(h+'×'+k), color:BEARING_COLORS[k]}); }
   });
   return out;
@@ -2771,16 +2808,19 @@ document.querySelectorAll('.axtab').forEach(tab=>{
   });
 });
 
-document.querySelectorAll('.bmToggle').forEach(cb=>{
-  cb.addEventListener('change', ()=>{
-    bmVisible[cb.dataset.key] = cb.checked;
-    Object.keys(chartRefs).forEach(ax=>{
-      const refs = chartRefs[ax];
-      if(refs && refs.psd){ refs.psd.options.plugins.bearingMarkers.markers = psdMarkers(); refs.psd.update('none'); }
-      if(refs && refs.env){ refs.env.options.plugins.bearingMarkers.markers = envMarkers(); refs.env.update('none'); }
-    });
+document.addEventListener('click', (e)=>{
+  const b = e.target.closest('.bmChip');
+  if(!b) return;
+  const st = b.dataset.kind === 'env' ? bmEnvVisible : bmVisible;
+  st[b.dataset.key] = !st[b.dataset.key];
+  renderAllBmChips();
+  Object.keys(chartRefs).forEach(ax=>{
+    const refs = chartRefs[ax];
+    if(refs && refs.psd){ refs.psd.options.plugins.bearingMarkers.markers = psdMarkers(); refs.psd.update('none'); }
+    if(refs && refs.env){ refs.env.options.plugins.bearingMarkers.markers = envMarkers(); refs.env.update('none'); }
   });
 });
+renderAllBmChips();
 
 new Chart(document.getElementById('trendCanvas'), {
   type:'line',
@@ -3963,8 +4003,8 @@ function showDetail(ax){
   const bearingCode = bearingCodeForPoint();
   const rpmVal = parseFloat(document.getElementById('rpmInput').value) || null;
   const bFreqs = computeBearingFrequencies(bearingCode, rpmVal);
-  bearingMarkerVisible = {};
-  if(bFreqs){ Object.keys(bFreqs).forEach(key=>{ bearingMarkerVisible[key] = true; }); }
+  bearingMarkerVisible = {}; envMarkerVisible = {};
+  if(bFreqs){ Object.keys(bFreqs).forEach(key=>{ bearingMarkerVisible[key] = true; envMarkerVisible[key] = true; }); }
 
   function buildMarkers(){
     if(!bFreqs) return [];
@@ -4002,7 +4042,7 @@ function showDetail(ax){
     if(!bFreqs) return [];
     const out = [];
     Object.keys(bFreqs).forEach(key=>{
-      if(!bearingMarkerVisible[key]) return;
+      if(!envMarkerVisible[key]) return;
       for(let h=1; h<=3; h++){
         out.push({ freq: bFreqs[key]*h, label: h===1 ? key : (h+'×'+key), color: BEARING_FAULT_COLORS[key] });
       }
@@ -4038,21 +4078,15 @@ function showDetail(ax){
   document.getElementById('btnResetZoomEnv').onclick = ()=> resetZoom(charts.env, ENV_MIN_HZ, ENV_F_MAX);
   document.getElementById('btnEnvRecalc').onclick = computeAndRenderEnvelope;
 
-  if(bFreqs){
-    Object.keys(bFreqs).forEach(key=>{
-      const cb = document.getElementById('bmToggle-'+key);
-      if(!cb) return;
-      cb.addEventListener('change', ()=>{
-        bearingMarkerVisible[key] = cb.checked;
-        charts.psd.options.plugins.bearingMarkers.markers = buildMarkers();
-        charts.psd.update('none');
-        if(charts.env){
-          charts.env.options.plugins.bearingMarkers.markers = buildEnvelopeMarkers();
-          charts.env.update('none');
-        }
-      });
-    });
-  }
+  renderBmChips('psdBmChips', bFreqs, bearingMarkerVisible, ()=>{
+    charts.psd.options.plugins.bearingMarkers.markers = buildMarkers();
+    charts.psd.update('none');
+  });
+  renderBmChips('envBmChips', bFreqs, envMarkerVisible, ()=>{
+    if(!charts.env) return;
+    charts.env.options.plugins.bearingMarkers.markers = buildEnvelopeMarkers();
+    charts.env.update('none');
+  });
 }
 
 // Fare tekerleği (masaüstü) ve iki parmakla sıkıştırma/sürükleme (mobil) ile
@@ -4317,9 +4351,8 @@ function buildBearingAnalysisHtml(code, rpm, freqs){
   }
   const rows = Object.keys(freqs).map(key=>{
     const label = { BPFO:'BPFO — Dış bilezik top geçiş frekansı', BPFI:'BPFI — İç bilezik top geçiş frekansı', BSF:'BSF — Top dönüş frekansı', FTF:'FTF — Kafes temel frekansı' }[key];
-    return `<label style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0; border-bottom:1px solid var(--line); cursor:pointer;">
+    return `<label style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0; border-bottom:1px solid var(--line);">
       <span style="display:flex; align-items:center; gap:8px; min-width:0;">
-        <input type="checkbox" id="bmToggle-${key}" checked style="accent-color:${BEARING_FAULT_COLORS[key]}; flex:none;">
         <span style="color:${BEARING_FAULT_COLORS[key]};">${label}</span>
       </span>
       <span style="font-family:'JetBrains Mono',monospace; flex:none;">${freqs[key].toFixed(2)} Hz</span>
@@ -4328,7 +4361,7 @@ function buildBearingAnalysisHtml(code, rpm, freqs){
   return `
     <div style="font-size:11px; color:var(--text-dim); margin-bottom:8px;">Rulman: ${code} · RPM: ${rpm} · Mil frekansı: ${(rpm/60).toFixed(2)} Hz</div>
     <div style="font-size:13px;">${rows}</div>
-    <div style="font-size:11px; color:var(--text-dim); margin-top:8px;">Kutucuklarla PSD grafiğindeki çizgileri tek tek açıp kapatabilirsiniz — iç içe geçtiklerinde birini kapatıp diğerini incelemek daha kolay olur. Grafiği tekerlek veya iki parmakla yakınlaştırıp sürükleyerek kaydırabilir, çift tıklama/dokunma ile sıfırlayabilirsiniz.</div>`;
+    <div style="font-size:11px; color:var(--text-dim); margin-top:8px;">Çizgileri PSD ve Zarf grafiklerinin hemen üstündeki düğmelerle, her grafikte ayrı ayrı açıp kapatabilirsiniz.</div>`;
 }
 
 // ============================================================
@@ -5428,11 +5461,13 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
       <div style="position:relative; height:240px;"><canvas class="chVel" data-ax="${ax}"></canvas></div>
       <div class="rv-bottom" data-ax="${ax}"></div>
       <h3 style="font-size:13px; margin:16px 0 6px;">İvme PSD (G²/Hz)</h3>
+      <div class="rv-top bm-chips" data-kind="psd"></div>
       ${zoomToolbar(ax,'psd')}
       <div style="position:relative; height:240px;"><canvas class="chPsd" data-ax="${ax}"></canvas></div>
       <div style="margin-top:8px;">${axesData[ax].psdAnalysisHtml || ''}</div>
       ${axesData[ax].env ? `
       <h3 style="font-size:13px; margin:16px 0 6px;">Zarf (Envelope) Spektrumu</h3>
+      <div class="rv-top bm-chips" data-kind="env"></div>
       ${zoomToolbar(ax,'env')}
       <div style="position:relative; height:240px;"><canvas class="chEnv" data-ax="${ax}"></canvas></div>
       <div style="margin-top:8px;">${axesData[ax].envelopeHtml}</div>
@@ -5486,7 +5521,6 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
   <div style="font-size:11.5px; color:#555; background:#f7f7f7; border:1px solid #e2e2e2; border-radius:6px; padding:8px 10px; margin-bottom:12px; line-height:1.5;">
     <b>İvme PSD grafiklerinin okunması:</b> Geniş banttaki çok sayıda küçük "halı" tipi tepe normaldir, tek başına arıza anlamına gelmez. Karar, rulman arıza frekansları ve harmoniklerinin ölçümde gerçekten tepe olarak görünüp görünmediğine bakılarak verilir (50 Hz şebeke ve devir harmonikleri sayılmaz); aynı arıza PSD ve Zarf'ta birlikte görünürse bulgu güçlenir. Nihai sonuç "Genel Değerlendirme"deki Seviye (1–4) ve gerekçelerdir.
   </div>
-  ${bearingCheckboxesHtml ? `<div style="margin-bottom:10px;">${bearingCheckboxesHtml}</div>` : ''}
 
   <div style="display:flex; gap:4px;">${tabsHtml}</div>
   ${panelsHtml}
@@ -5721,8 +5755,20 @@ function rvAttach(chart, canvas, ax, f1, baseMax, rms){
 
 const BEARING_FREQS = ${JSON.stringify(bearing && bearing.freqs ? bearing.freqs : null)};
 const BEARING_COLORS = ${JSON.stringify(BEARING_FAULT_COLORS)};
-let bmVisible = {};
-if(BEARING_FREQS){ Object.keys(BEARING_FREQS).forEach(k=>{ bmVisible[k] = true; }); }
+let bmVisible = {};   // PSD çizgileri
+let bmEnvVisible = {}; // Zarf çizgileri — PSD'den bağımsız
+if(BEARING_FREQS){ Object.keys(BEARING_FREQS).forEach(k=>{ bmVisible[k] = true; bmEnvVisible[k] = true; }); }
+function bmChipsHtml(kind){
+  if(!BEARING_FREQS) return '';
+  const st = kind === 'env' ? bmEnvVisible : bmVisible;
+  return '<span style="font-size:11px; color:#888; margin-right:2px;">Rulman çizgileri:</span>' + Object.keys(BEARING_FREQS).map(k=>{
+    const on = !!st[k], col = BEARING_COLORS[k];
+    return '<button type="button" class="rv-chip bmChip" data-kind="'+kind+'" data-key="'+k+'" style="'+(on ? 'border-color:'+col+'; color:'+col+'; background:#fff;' : 'opacity:.5;')+'">'+(on?'● ':'○ ')+k+'</button>';
+  }).join('');
+}
+function renderAllBmChips(){
+  document.querySelectorAll('.bm-chips').forEach(el=>{ el.innerHTML = bmChipsHtml(el.dataset.kind); el.style.display = BEARING_FREQS ? 'flex' : 'none'; });
+}
 
 function formatCompactNumber(v){
   if(v === 0) return '0';
@@ -5776,7 +5822,7 @@ function psdMarkers(){
 function envMarkers(){
   if(!BEARING_FREQS) return [];
   const out = [];
-  Object.keys(BEARING_FREQS).filter(k=>bmVisible[k]).forEach(k=>{
+  Object.keys(BEARING_FREQS).filter(k=>bmEnvVisible[k]).forEach(k=>{
     for(let h=1; h<=3; h++){ out.push({freq:BEARING_FREQS[k]*h, label:h===1?k:(h+'×'+k), color:BEARING_COLORS[k]}); }
   });
   return out;
@@ -6106,16 +6152,19 @@ document.querySelectorAll('.axtab').forEach(tab=>{
   });
 });
 
-document.querySelectorAll('.bmToggle').forEach(cb=>{
-  cb.addEventListener('change', ()=>{
-    bmVisible[cb.dataset.key] = cb.checked;
-    Object.keys(chartRefs).forEach(ax=>{
-      const refs = chartRefs[ax];
-      if(refs && refs.psd){ refs.psd.options.plugins.bearingMarkers.markers = psdMarkers(); refs.psd.update('none'); }
-      if(refs && refs.env){ refs.env.options.plugins.bearingMarkers.markers = envMarkers(); refs.env.update('none'); }
-    });
+document.addEventListener('click', (e)=>{
+  const b = e.target.closest('.bmChip');
+  if(!b) return;
+  const st = b.dataset.kind === 'env' ? bmEnvVisible : bmVisible;
+  st[b.dataset.key] = !st[b.dataset.key];
+  renderAllBmChips();
+  Object.keys(chartRefs).forEach(ax=>{
+    const refs = chartRefs[ax];
+    if(refs && refs.psd){ refs.psd.options.plugins.bearingMarkers.markers = psdMarkers(); refs.psd.update('none'); }
+    if(refs && refs.env){ refs.env.options.plugins.bearingMarkers.markers = envMarkers(); refs.env.update('none'); }
   });
 });
+renderAllBmChips();
 
 document.addEventListener('click', (e)=>{
   const btn = e.target.closest('.zoomBtn');

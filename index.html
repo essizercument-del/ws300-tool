@@ -2050,7 +2050,7 @@ function buildComparisonReportHtml(axesSeries, trend, summaryRows, bearing, char
   }).join('');
 
   const bearingSectionHtml = (bearing && bearing.code) ? `
-    <h2 style="font-size:15px; margin:20px 0 8px;">Rulman Arıza Frekansları</h2>
+    <h3 style="font-size:13px; margin:16px 0 6px;">Rulman Arıza Frekansları</h3>
     ${buildBearingAnalysisPrintHtml(bearing.code, bearing.rpm, bearing.freqs)}
     <div style="font-size:11px; color:#888; margin-top:4px;">En güncel seçili ölçümün RPM'i (${bearing.rpm ?? '—'}) kullanılarak hesaplanmıştır — farklı ölçümler farklı RPM'de alınmış olabilir.</div>
   ` : '';
@@ -2080,6 +2080,7 @@ function buildComparisonReportHtml(axesSeries, trend, summaryRows, bearing, char
       ${zoomToolbar('vel')}
       <div style="position:relative; height:240px;"><canvas class="chVel" data-ax="${ax}"></canvas></div>
       <div class="rv-bottom" data-ax="${ax}"></div>
+      ${bearingSectionHtml}
       <h3 style="font-size:13px; margin:16px 0 6px;">İvme PSD Karşılaştırma (G²/Hz)</h3>
       <div class="rv-top bm-chips" data-kind="psd"></div>
       ${zoomToolbar('psd')}
@@ -2136,7 +2137,6 @@ function buildComparisonReportHtml(axesSeries, trend, summaryRows, bearing, char
   <h2 style="font-size:15px; margin-bottom:8px;">RMS Trend (bu nokta için tüm kayıtlı ölçümler)</h2>
   <div style="position:relative; height:160px; margin-bottom:16px;"><canvas id="trendCanvas"></canvas></div>
 
-  ${bearingSectionHtml}
 
   <h2 style="font-size:15px; margin:20px 0 4px;">Spektrum Karşılaştırması</h2>
   <div style="font-size:11.5px; color:#555; background:#f7f7f7; border:1px solid #e2e2e2; border-radius:6px; padding:8px 10px; margin-bottom:12px; line-height:1.5;">
@@ -5431,9 +5431,9 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
   const axesPresent = ['X','Y','Z'].filter(ax=>axesData[ax]);
 
   const bearingSectionHtml = (bearing && bearing.code) ? `
-    <h2 style="font-size:15px; margin:20px 0 8px;">Rulman Arıza Frekansları</h2>
+    <h3 style="font-size:13px; margin:16px 0 6px;">Rulman Arıza Frekansları</h3>
     ${buildBearingAnalysisPrintHtml(bearing.code, bearing.rpm, bearing.freqs)}
-    <div style="font-size:11px; color:#888; margin-top:4px;">Bu frekanslar aşağıdaki grafiklerde renkli kesikli çizgiler olarak işaretlenir — kutucuklarla açıp kapatabilirsiniz.</div>
+    <div style="font-size:11px; color:#888; margin-top:4px;">Bu frekanslar aşağıdaki PSD ve Zarf grafiklerinde renkli kesikli çizgiler olarak işaretlenir — her grafiğin hemen üstündeki düğmelerle ayrı ayrı açıp kapatabilirsiniz.</div>
   ` : '';
 
   const bearingCheckboxesHtml = (bearing && bearing.freqs) ? Object.keys(bearing.freqs).map(key=>{
@@ -5460,6 +5460,7 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
       ${zoomToolbar(ax,'vel')}
       <div style="position:relative; height:240px;"><canvas class="chVel" data-ax="${ax}"></canvas></div>
       <div class="rv-bottom" data-ax="${ax}"></div>
+      ${bearingSectionHtml}
       <h3 style="font-size:13px; margin:16px 0 6px;">İvme PSD (G²/Hz)</h3>
       <div class="rv-top bm-chips" data-kind="psd"></div>
       ${zoomToolbar(ax,'psd')}
@@ -5515,7 +5516,6 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
     ${rowsHtml}
   </table>
 
-  ${bearingSectionHtml}
 
   <h2 style="font-size:15px; margin:20px 0 4px;">Spektrum Grafikleri</h2>
   <div style="font-size:11.5px; color:#555; background:#f7f7f7; border:1px solid #e2e2e2; border-radius:6px; padding:8px 10px; margin-bottom:12px; line-height:1.5;">

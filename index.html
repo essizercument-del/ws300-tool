@@ -131,6 +131,25 @@ const db = firebase.firestore();
     padding:4px 9px; border-radius:6px; border:1px solid var(--line);
     background:var(--panel-2); color:var(--text-dim); cursor:pointer; text-transform:none; letter-spacing:0;
   }
+  .vp-controls{ display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:2px 0 8px; }
+  .vp-chip{ font-family:'JetBrains Mono',monospace; font-size:11px; padding:6px 10px; border-radius:14px;
+    border:1px solid var(--line); background:var(--panel-2); color:var(--text-dim); cursor:pointer; text-transform:none; letter-spacing:0; }
+  .vp-chip.toggle.on{ border-color:#ffd166; color:#ffd166; }
+  .vp-chip:disabled{ opacity:.45; cursor:default; }
+  .vp-sep{ flex:1 0 4px; }
+  .vp-readout{ min-height:38px; margin-top:6px; padding:6px 10px; border-radius:8px; background:var(--panel-2);
+    border-left:3px solid #ffd166; font-family:'JetBrains Mono',monospace; font-size:12px; line-height:1.5; color:var(--text); }
+  .vr-info{ font-family:inherit; font-size:11.5px; color:var(--text-dim); }
+  .vr-info.h1{ color:#ff9f43; } .vr-info.h2{ color:#feca57; } .vr-info.h3{ color:#ff6b6b; } .vr-info.warn{ color:#5ec8ff; }
+  .vp-sub{ margin:14px 0 6px; font-size:12px; color:var(--text); font-weight:600; }
+  .vp-sub span{ font-weight:400; color:var(--text-dim); font-size:10.5px; margin-left:6px; }
+  .vp-table{ width:100%; border-collapse:collapse; font-size:11.5px; }
+  .vp-table th{ text-align:left; font-weight:400; color:var(--text-dim); font-size:10.5px; padding:4px 5px; border-bottom:1px solid var(--line); }
+  .vp-table td{ padding:7px 5px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .vp-table td.num{ font-family:'JetBrains Mono',monospace; white-space:nowrap; }
+  .vp-table tr[data-f]{ cursor:pointer; }
+  .vp-table tr[data-f]:active{ background:var(--panel-2); }
+  .vp-note{ margin-top:8px; font-size:10.5px; line-height:1.5; color:var(--text-dim); }
   .btn-mini:hover{ border-color:var(--phosphor-dim); color:var(--text); }
 
   .progress-wrap{
@@ -511,8 +530,12 @@ const db = firebase.firestore();
 
   <div class="panel">
     <div class="panel-title">Hız Spektrumu <span class="tag">mm/s vs Hz — genel şiddet (ISO 10816)</span> <button class="btn-mini" id="btnResetZoomVel" type="button">Yakınlaştırmayı sıfırla</button></div>
-    <div style="position:relative; height:220px;"><canvas id="chartDetailVel"></canvas></div>
-    <div style="font-size:10px; color:var(--text-dim); text-align:center; margin:4px 0 2px;">tekerlek / iki parmak ile yakınlaştır · sürükleyerek kaydır · çift tıkla/dokun ile sıfırla</div>
+    <div class="vp-controls" id="velControls"></div>
+    <div style="position:relative; height:240px;"><canvas id="chartDetailVel"></canvas></div>
+    <div class="vp-readout" id="velReadout"></div>
+    <div style="font-size:10px; color:var(--text-dim); text-align:center; margin:4px 0 2px;">dokun: değer oku · iki parmak: yakınlaştır · yana kaydır: gezin · çift dokun: sıfırla</div>
+    <div class="vp-note" id="velCompareNote" style="display:none"></div>
+    <div id="velPeaks"></div>
   </div>
 
   <div class="panel" id="isoAnalysisPanel">
@@ -679,6 +702,7 @@ let selTag = null;    // {id, name}
 let selPoint = null;  // 'on' | 'arka'
 let pendingDelete = null; // {type:'unit'|'tag', id, name}
 let trendChart = null;
+let trendDocsData = []; // bu noktanın tüm ölçümleri (eskiden yeniye) — hız paneli karşılaştırması için
 
 function unitsCol(){ return db.collection('units'); }
 function tagsCol(unitId){ return db.collection('units').doc(unitId).collection('tags'); }
@@ -1626,6 +1650,7 @@ async function loadTrend(){
     if(snap.empty){
       content.innerHTML = '<div class="trend-empty">Bu nokta için henüz kayıtlı ölçüm yok.</div>';
       if(trendChart){ trendChart.destroy(); trendChart=null; }
+      trendDocsData = [];
       lastHistoricalDoc = null;
       refreshPdfButtonState();
       return;
@@ -1637,6 +1662,7 @@ async function loadTrend(){
     });
     // En güncel kayıt — canlı ölçüm henüz alınmamışsa PDF Rapor'un bu
     // geçmiş ölçümden üretilebilmesi için saklanıyor.
+    trendDocsData = docs.map(d=>d.data());
     lastHistoricalDoc = docs[docs.length - 1].data();
     refreshPdfButtonState();
     if(docs.length > 30) docs = docs.slice(docs.length - 30);
@@ -1661,10 +1687,10 @@ async function loadTrend(){
       options:{
         responsive:true, animation:false, maintainAspectRatio:false,
         scales:{
-          x:{ ticks:{color:'#7c8a80', font:{family:'JetBrains Mono', size:10}}, grid:{color:'#1a221c'} },
-          y:{ title:{display:true, text:'mm/s', color:'#7c8a80'}, ticks:{color:'#7c8a80', font:{family:'JetBrains Mono', size:10}}, grid:{color:'#1a221c'} }
+          x:{ ticks:{color:'#7c8a80', font:{family:"'JetBrains Mono', ui-monospace, Menlo, monospace", size:10}}, grid:{color:'#1a221c'} },
+          y:{ title:{display:true, text:'mm/s', color:'#7c8a80'}, ticks:{color:'#7c8a80', font:{family:"'JetBrains Mono', ui-monospace, Menlo, monospace", size:10}}, grid:{color:'#1a221c'} }
         },
-        plugins:{ legend:{ labels:{ color:'#d9e4dc', font:{family:'JetBrains Mono', size:11} } } }
+        plugins:{ legend:{ labels:{ color:'#d9e4dc', font:{family:"'JetBrains Mono', ui-monospace, Menlo, monospace", size:11} } } }
       }
     });
   }catch(err){
@@ -2214,7 +2240,9 @@ function autoscaleYVisible(chart, xMin, xMax){
     }
     if(lo===hi){ const d=Math.abs(lo)*0.1||1; lo-=d; hi+=d; }
     const pad = (hi-lo)*0.12 || Math.abs(hi)*0.1 || 1;
-    chart.options.scales.y.min = chart._clipPeaks ? 0 : lo-pad;
+    // Spektrumlar negatif olamaz: taban 0'da sabitlenir (eksende -0.13 gibi anlamsız değer görünmesin)
+    chart.options.scales.y.min = (chart._clipPeaks || lo >= 0) ? 0 : lo-pad;
+    if(chart.options.scales.y.ticks) chart.options.scales.y.ticks.includeBounds = false; // 1.34672532 gibi ham sınır değerleri etiket olarak yazılmasın
     chart.options.scales.y.max = hi+pad;
     if(chart._clipPeaks && chart.options.scales.y.title){
       if(chart._yBase == null) chart._yBase = chart.options.scales.y.title.text;
@@ -2225,65 +2253,172 @@ function autoscaleYVisible(chart, xMin, xMax){
   }
 }
 
-function attachZoomPan(chart, canvas, baseMin, baseMax){
-  zoomTargets.set(canvas, { chart, baseMin, baseMax });
+// ---- Yakınlaştırma/kaydırma motoru (v2) ----
+// Önceki sürümdeki üç hata giderildi:
+//  1) Çift dokunma algılaması her touchstart'ta (iki parmaklı pinch dahil)
+//     zamanı güncelliyordu; peş peşe pinch yapınca (tepe noktasına yaklaşırken
+//     tam olarak bu yapılır) ilk parmağın inişi "çift dokunma" sayılıp grafik
+//     tamamen uzaklaştırılıyordu. Artık yalnızca GERÇEK dokunmalar (tek parmak,
+//     kısa süre, hareketsiz, pinch içermeyen) çift dokunma sayılır.
+//  2) Pinch mesafesi sadece yatay farktan ölçülüyordu; parmaklar dikeye
+//     yakın açılınca mesafe ~0 olup grafik tam uzaklaşıyordu. Artık yatay
+//     açıklığı 40 px'in altındaki (dikey) pinch yok sayılır.
+//  3) Pinch mevcut aralığın ortasına göre yapılıyordu; tepe noktası ekrandan
+//     kayıyordu. Artık parmakların altındaki frekans parmakların altında kalır.
+// Ayrıca minimum aralık %2'den (1000 Hz'de 20 Hz) ~4 Hz'e indirildi ve tek
+// parmakla dikey kaydırma sayfayı kaydırır, yatay kaydırma grafiği kaydırır.
+function zpChartOf(t){ return (t.chart && t.chart.current) ? t.chart.current : t.chart; }
+function attachZoomPan(chart, canvasRef, baseMin, baseMax){
+  var canvas = (typeof canvasRef === 'string') ? document.getElementById(canvasRef) : canvasRef;
+  if(!canvas) return;
+  zoomTargets.set(canvas, { chart: chart, baseMin: baseMin, baseMax: baseMax });
+  canvas.style.touchAction = 'pan-y';
   if(canvas.dataset.zoomBound) return;
   canvas.dataset.zoomBound = '1';
+
   function target(){ return zoomTargets.get(canvas); }
-  function clamp(min,max){
-    const t = target(); const full = t.baseMax - t.baseMin;
-    const minRange = full*0.02; let range = max-min;
-    if(range>full) range = full; if(range<minRange) range = minRange;
-    if(min<t.baseMin){ min=t.baseMin; max=min+range; }
-    if(max>t.baseMax){ max=t.baseMax; min=max-range; }
-    return [min,max];
+  function cur(){ return zpChartOf(target()); }
+  function clampRange(min, max){
+    var t = target();
+    var full = t.baseMax - t.baseMin;
+    var minRange = Math.min(full, Math.max(full * 0.004, 4));
+    var range = max - min;
+    if(!isFinite(range) || range > full) range = full;
+    if(range < minRange){ var mid = (min + max) / 2; range = minRange; min = mid - range / 2; }
+    if(min < t.baseMin){ min = t.baseMin; }
+    max = min + range;
+    if(max > t.baseMax){ max = t.baseMax; min = max - range; }
+    return [min, max];
   }
-  canvas.addEventListener('wheel', (e)=>{
+  var pending = null, rafId = 0;
+  function apply(min, max){
+    var r = clampRange(min, max);
+    pending = r;
+    if(rafId) return;
+    rafId = requestAnimationFrame(function(){
+      rafId = 0;
+      var c = cur(); if(!c || !pending) return;
+      c.options.scales.x.min = pending[0];
+      c.options.scales.x.max = pending[1];
+      autoscaleYVisible(c, pending[0], pending[1]);
+      c.update('none');
+      pending = null;
+    });
+  }
+  function plotGeom(){
+    var c = cur(); var xs = c.scales.x;
+    var rect = canvas.getBoundingClientRect();
+    return { left: rect.left + xs.left, width: (xs.right - xs.left) || 1, min: xs.min, max: xs.max };
+  }
+  function doReset(){ var t = target(); resetZoom(zpChartOf(t), t.baseMin, t.baseMax); }
+
+  // --- Fare (masaüstü) ---
+  canvas.addEventListener('wheel', function(e){
     e.preventDefault();
-    const t = target(); const c = t.chart.current; const xScale = c.scales.x;
-    const rect = canvas.getBoundingClientRect();
-    const xVal = xScale.getValueForPixel(e.clientX-rect.left);
-    const curMin=xScale.min, curMax=xScale.max, range=curMax-curMin;
-    const factor = e.deltaY<0?0.82:1.22;
-    let newRange = range*factor;
-    let newMin = xVal-(xVal-curMin)/range*newRange, newMax = newMin+newRange;
-    [newMin,newMax] = clamp(newMin,newMax);
-    c.options.scales.x.min=newMin; c.options.scales.x.max=newMax; autoscaleYVisible(c,newMin,newMax); c.update('none');
+    var g = plotGeom();
+    var frac = Math.min(1, Math.max(0, (e.clientX - g.left) / g.width));
+    var range = g.max - g.min;
+    var xVal = g.min + frac * range;
+    var newRange = range * (e.deltaY < 0 ? 0.8 : 1.25);
+    apply(xVal - frac * newRange, xVal - frac * newRange + newRange);
   }, {passive:false});
-  canvas.addEventListener('dblclick', ()=>{ const t=target(); resetZoom(t.chart.current, t.baseMin, t.baseMax); });
-  let drag=null;
-  canvas.addEventListener('mousedown', (e)=>{ const xScale=target().chart.current.scales.x; drag={x:e.clientX,min:xScale.min,max:xScale.max}; });
-  window.addEventListener('mousemove', (e)=>{
-    if(!drag) return; const c=target().chart.current; const xScale=c.scales.x;
-    const pixToVal=(drag.max-drag.min)/((xScale.right-xScale.left)||1);
-    const dx=e.clientX-drag.x; let newMin=drag.min-dx*pixToVal, newMax=drag.max-dx*pixToVal;
-    [newMin,newMax]=clamp(newMin,newMax); c.options.scales.x.min=newMin; c.options.scales.x.max=newMax; autoscaleYVisible(c,newMin,newMax); c.update('none');
+  canvas.addEventListener('dblclick', doReset);
+  var drag = null;
+  canvas.addEventListener('mousedown', function(e){ var g = plotGeom(); drag = { x: e.clientX, g: g }; });
+  window.addEventListener('mousemove', function(e){
+    if(!drag) return;
+    var g = drag.g; var perPx = (g.max - g.min) / g.width;
+    var dx = e.clientX - drag.x;
+    apply(g.min - dx * perPx, g.max - dx * perPx);
   });
-  window.addEventListener('mouseup', ()=>{ drag=null; });
-  let touch=null, lastTap=0;
-  canvas.addEventListener('touchstart', (e)=>{
-    const now=Date.now();
-    if(e.touches.length===1 && now-lastTap<300){ const t=target(); resetZoom(t.chart.current,t.baseMin,t.baseMax); touch=null; return; }
-    lastTap=now; const c=target().chart.current;
-    if(e.touches.length===2){ const [t1,t2]=e.touches; touch={mode:'pinch', dist:Math.abs(t1.clientX-t2.clientX), min:c.scales.x.min, max:c.scales.x.max}; }
-    else if(e.touches.length===1){ touch={mode:'pan', x:e.touches[0].clientX, min:c.scales.x.min, max:c.scales.x.max}; }
+  window.addEventListener('mouseup', function(e){
+    if(drag && Math.abs(e.clientX - drag.x) < 4) canvas.dispatchEvent(new CustomEvent('charttap', { detail: { clientX: e.clientX } }));
+    drag = null;
+  });
+
+  // --- Dokunmatik (mobil) ---
+  var st = null;            // aktif hareket durumu
+  var hadPinch = false;     // bu dokunma dizisinde pinch oldu mu
+  var lastTap = null;       // {time, x, y} — çift dokunma için
+  function startPinch(t1, t2){
+    var g = plotGeom();
+    var midX = (t1.clientX + t2.clientX) / 2;
+    var frac = (midX - g.left) / g.width;
+    st = { mode: 'pinch', g: g, dx0: Math.abs(t1.clientX - t2.clientX),
+           anchor: g.min + frac * (g.max - g.min) };
+    hadPinch = true;
+  }
+  function startOne(touch, asPan){
+    st = { mode: asPan ? 'pan' : 'pending', g: plotGeom(), x0: touch.clientX, y0: touch.clientY,
+           t0: Date.now(), moved: false };
+  }
+  canvas.addEventListener('touchstart', function(e){
+    if(e.touches.length === 1){ hadPinch = false; startOne(e.touches[0], false); }
+    else if(e.touches.length === 2){ startPinch(e.touches[0], e.touches[1]); }
   }, {passive:true});
-  canvas.addEventListener('touchmove', (e)=>{
-    if(!touch) return; const c=target().chart.current;
-    if(touch.mode==='pinch' && e.touches.length===2){
-      e.preventDefault(); const [t1,t2]=e.touches; const dist=Math.abs(t1.clientX-t2.clientX)||1;
-      const scaleFactor=touch.dist/dist; const range=touch.max-touch.min; const mid=(touch.min+touch.max)/2;
-      let newRange=range*scaleFactor; let newMin=mid-newRange/2, newMax=mid+newRange/2;
-      [newMin,newMax]=clamp(newMin,newMax); c.options.scales.x.min=newMin; c.options.scales.x.max=newMax; autoscaleYVisible(c,newMin,newMax); c.update('none');
-    } else if(touch.mode==='pan' && e.touches.length===1){
-      e.preventDefault(); const xScale=c.scales.x;
-      const pixToVal=(touch.max-touch.min)/((xScale.right-xScale.left)||1);
-      const dx=e.touches[0].clientX-touch.x; let newMin=touch.min-dx*pixToVal, newMax=touch.max-dx*pixToVal;
-      [newMin,newMax]=clamp(newMin,newMax); c.options.scales.x.min=newMin; c.options.scales.x.max=newMax; autoscaleYVisible(c,newMin,newMax); c.update('none');
+
+  canvas.addEventListener('touchmove', function(e){
+    if(!st) return;
+    if(st.mode === 'pinch' && e.touches.length >= 2){
+      e.preventDefault();
+      var t1 = e.touches[0], t2 = e.touches[1];
+      var dx = Math.abs(t1.clientX - t2.clientX);
+      if(st.dx0 < 40){
+        // Dikey pinch: henüz yatay açıklık yok — yeterince açılınca başlangıcı buradan al.
+        if(dx >= 40) startPinch(t1, t2);
+        return;
+      }
+      if(dx < 20) dx = 20;
+      var g = st.g;
+      var newRange = (g.max - g.min) * (st.dx0 / dx);
+      var frac = ((t1.clientX + t2.clientX) / 2 - g.left) / g.width;
+      var newMin = st.anchor - frac * newRange;
+      apply(newMin, newMin + newRange);
+      return;
+    }
+    if(e.touches.length !== 1) return;
+    var p = e.touches[0];
+    var ddx = p.clientX - st.x0, ddy = p.clientY - st.y0;
+    if(st.mode === 'pending'){
+      if(Math.abs(ddx) < 8 && Math.abs(ddy) < 8) return;
+      st.moved = true;
+      if(Math.abs(ddy) > Math.abs(ddx)){ st = null; return; } // dikey: sayfa kaysın
+      st.mode = 'pan';
+    }
+    if(st.mode === 'pan'){
+      e.preventDefault();
+      var gg = st.g; var perPx = (gg.max - gg.min) / gg.width;
+      apply(gg.min - ddx * perPx, gg.max - ddx * perPx);
     }
   }, {passive:false});
-  canvas.addEventListener('touchend', ()=>{ touch=null; });
+
+  canvas.addEventListener('touchend', function(e){
+    if(e.touches.length === 1){
+      // Pinch bitti, bir parmak kaldı: zıplamadan kaydırmaya geç.
+      startOne(e.touches[0], true);
+      return;
+    }
+    if(e.touches.length >= 2){ startPinch(e.touches[0], e.touches[1]); return; }
+    var wasTap = st && st.mode === 'pending' && !st.moved && !hadPinch && (Date.now() - st.t0) < 250;
+    if(wasTap){
+      canvas.dispatchEvent(new CustomEvent('charttap', { detail: { clientX: st.x0 } }));
+      var now = Date.now();
+      if(lastTap && now - lastTap.time < 320 &&
+         Math.abs(st.x0 - lastTap.x) < 40 && Math.abs(st.y0 - lastTap.y) < 40){
+        lastTap = null;
+        doReset();
+      } else {
+        lastTap = { time: now, x: st.x0, y: st.y0 };
+      }
+    } else {
+      lastTap = null;
+    }
+    st = null;
+  });
+  canvas.addEventListener('touchcancel', function(){ st = null; lastTap = null; });
 }
+// ---- /Yakınlaştırma motoru ----
+
 function resetZoom(chart, baseMin, baseMax){
   chart.options.scales.x.min=baseMin; chart.options.scales.x.max=baseMax;
   delete chart.options.scales.y.min; delete chart.options.scales.y.max;
@@ -2377,7 +2512,7 @@ document.addEventListener('click', (e)=>{
   if(op==='reset'){ resetZoom(chart, t.baseMin, t.baseMax); return; }
   const xScale = chart.scales.x;
   const curMin=xScale.min, curMax=xScale.max, range=curMax-curMin, mid=(curMin+curMax)/2;
-  const full = t.baseMax-t.baseMin, minRange = full*0.02;
+  const full = t.baseMax-t.baseMin, minRange = Math.min(full, Math.max(full*0.004, 4));
   let newRange = range*(op==='in'?0.7:(1/0.7));
   if(newRange>full) newRange=full; if(newRange<minRange) newRange=minRange;
   let newMin = mid-newRange/2, newMax = mid+newRange/2;
@@ -3106,6 +3241,292 @@ function buildIsoAnalysisHtml(ax){
     </div>`;
 }
 
+// ============================================================
+// HIZ SPEKTRUMU PANELİ — imleç, devir çizgileri, tepe tablosu,
+// hazır aralıklar ve önceki ölçümle karşılaştırma
+// ============================================================
+const VEL_CURSOR_COLOR = '#ffd166';
+const VEL_PREV_COLOR = '#8a948d';
+let velPanelState = null; // {ax, f1, rpm, fullPts, binnedPts, prevPts, prevLabel, compare, showOrders, cursorF}
+
+// İmleç çizen Chart.js eklentisi (sadece options.plugins.velCursor tanımlı grafiklerde çizer)
+Chart.register({
+  id: 'velCursor',
+  afterDraw(chart){
+    const cfg = chart.options.plugins && chart.options.plugins.velCursor;
+    if(!cfg || cfg.x == null) return;
+    const xs = chart.scales.x, ys = chart.scales.y;
+    if(cfg.x < xs.min || cfg.x > xs.max) return;
+    const {ctx, chartArea} = chart;
+    const x = xs.getPixelForValue(cfg.x);
+    ctx.save();
+    ctx.strokeStyle = VEL_CURSOR_COLOR; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(x, chartArea.top); ctx.lineTo(x, chartArea.bottom); ctx.stroke();
+    if(cfg.y != null){
+      const y = Math.max(chartArea.top, Math.min(chartArea.bottom, ys.getPixelForValue(cfg.y)));
+      ctx.fillStyle = VEL_CURSOR_COLOR;
+      ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  }
+});
+
+function velShaftHz(rpm){
+  if(!rpm) return null;
+  const est = liveShaftHz(rpm);
+  return (est && isFinite(est)) ? est : rpm/60;
+}
+
+// Bir frekansı devir katına göre sınıflandırır → {order, text, cls}
+// Tolerans Hz cinsinden: spektrum çözünürlüğü (tam çözünürlükte 1 Hz, karşılaştırma
+// modunda ≈3.3 Hz'lik kutular) ve devir tahmini belirsizliği (%2) birlikte hesaba katılır.
+function velOrderInfo(f, f1){
+  if(!f1) return { order:null, text:'RPM girilmemiş', cls:'' };
+  const r = f / f1;
+  const n = Math.max(1, Math.round(r));
+  const binHz = (velPanelState && velPanelState.compare && velPanelState.prevPts) ? 3.5 : 1.5;
+  const tolHz = Math.max(binHz, 0.02 * n * f1);
+  if(Math.abs(f - n*f1) <= tolHz){
+    if(n === 1) return { order:r, text:'1× devir — dengesizlik belirtisi', cls:'h1' };
+    if(n === 2) return { order:r, text:'2× devir — hizalama bozukluğu belirtisi', cls:'h2' };
+    if(n <= 10) return { order:r, text:n+'× devir — mekanik gevşeklik belirtisi', cls:'h3' };
+    return { order:r, text:n+'× devir', cls:'' };
+  }
+  if(r < 0.9) return { order:r, text:'Devir altı — kayış / sürtünme olabilir', cls:'warn' };
+  return { order:r, text:'Devirle ilişkisiz (rulman/elektriksel olabilir)', cls:'' };
+}
+
+// En güçlü 5 tepe (10..VEL_F_HIGH Hz). Enerji payı, pencere sızıntısı nedeniyle
+// tepenin ±2 komşu noktasıyla birlikte hesaplanır (Σ velAmp² = toplam RMS²).
+function velTopPeaks(freqs, velAmp, rms, count){
+  const cand = [];
+  for(let k=1;k<freqs.length-1 && freqs[k]<=VEL_F_HIGH;k++){
+    if(freqs[k] < VEL_F_LOW) continue;
+    const v = velAmp[k];
+    if(v > 0 && v >= velAmp[k-1] && v > velAmp[k+1]) cand.push(k);
+  }
+  cand.sort((a,b)=>velAmp[b]-velAmp[a]);
+  const out = [];
+  const vmax = cand.length ? velAmp[cand[0]] : 0;
+  for(const k of cand){
+    if(velAmp[k] < vmax*0.08) break; // gürültü seviyesindeki tepeleri listeleme
+    if(out.some(p=>Math.abs(p.f - freqs[k]) < 3)) continue;
+    let e = 0;
+    for(let j=Math.max(0,k-2); j<=Math.min(freqs.length-1,k+2); j++) e += velAmp[j]*velAmp[j];
+    out.push({ k, f:freqs[k], v:velAmp[k], share: rms>0 ? Math.min(100, e/(rms*rms)*100) : 0 });
+    if(out.length >= count) break;
+  }
+  return out;
+}
+
+function velSetRange(min, max){
+  const c = charts.vel; if(!c) return;
+  const t = zoomTargets.get(document.getElementById('chartDetailVel'));
+  const bMin = t ? t.baseMin : 0, bMax = t ? t.baseMax : VEL_F_HIGH;
+  min = Math.max(bMin, min); max = Math.min(bMax, max);
+  if(max - min < 4){ const m=(min+max)/2; min=m-2; max=m+2; }
+  c.options.scales.x.min = min; c.options.scales.x.max = max;
+  autoscaleYVisible(c, min, max);
+  c.update('none');
+}
+
+function velActivePts(){
+  const s = velPanelState;
+  return (s.compare && s.prevPts) ? s.binnedPts : s.fullPts;
+}
+
+function velSetCursor(f){
+  const s = velPanelState; const c = charts.vel;
+  if(!s || !c) return;
+  const pts = velActivePts();
+  if(f == null || !pts.length){ s.cursorF = null; c.options.plugins.velCursor = {x:null}; c.update('none'); velRenderReadout(); return; }
+  // En yakın noktaya, sonra ±3 nokta içindeki yerel tepeye oturt (dokunma hassasiyeti için)
+  let lo=0, hi=pts.length-1;
+  while(hi-lo>1){ const m=(lo+hi)>>1; if(pts[m].x < f) lo=m; else hi=m; }
+  let k = Math.abs(pts[lo].x-f) <= Math.abs(pts[hi].x-f) ? lo : hi;
+  const span = (c.scales.x.max - c.scales.x.min);
+  const win = span > 150 ? 3 : 1;
+  let best = k;
+  for(let j=Math.max(0,k-win); j<=Math.min(pts.length-1,k+win); j++){ if(pts[j].y > pts[best].y) best = j; }
+  s.cursorF = pts[best].x;
+  c.options.plugins.velCursor = { x: pts[best].x, y: pts[best].y };
+  c.update('none');
+  velRenderReadout(pts[best]);
+}
+
+function velRenderReadout(pt){
+  const el = document.getElementById('velReadout');
+  const s = velPanelState;
+  if(!el) return;
+  if(!pt){
+    el.innerHTML = '<span style="color:var(--text-dim)">Değer okumak için grafiğe dokunun.</span>';
+    return;
+  }
+  const info = velOrderInfo(pt.x, s.f1);
+  let prevTxt = '';
+  if(s.compare && s.prevPts && s.prevPts.length){
+    let best = s.prevPts[0];
+    s.prevPts.forEach(p=>{ if(Math.abs(p.x-pt.x) < Math.abs(best.x-pt.x)) best = p; });
+    const d = pt.y - best.y;
+    prevTxt = ' · önceki: <b>'+best.y.toFixed(2)+'</b> ('+(d>=0?'+':'')+d.toFixed(2)+')';
+  }
+  el.innerHTML =
+    '<span class="vr-main">'+pt.x.toFixed(1)+' Hz · <b>'+pt.y.toFixed(2)+' mm/s</b>'+
+    (info.order!=null ? ' · '+info.order.toFixed(2)+'× devir' : '')+'</span>'+prevTxt+
+    '<div class="vr-info '+info.cls+'">'+info.text+'</div>';
+}
+
+function velRenderPeaks(){
+  const s = velPanelState; const el = document.getElementById('velPeaks');
+  if(!el || !s) return;
+  const sp = axisSpectra[s.ax];
+  const peaks = velTopPeaks(sp.freqs, sp.velAmp, sp.rmsVelocity, 5);
+  if(!peaks.length){ el.innerHTML = ''; return; }
+  const rows = peaks.map(p=>{
+    const info = velOrderInfo(p.f, s.f1);
+    return '<tr data-f="'+p.f+'">'+
+      '<td class="num">'+p.f.toFixed(1)+'</td>'+
+      '<td class="num">'+p.v.toFixed(2)+'</td>'+
+      '<td class="num">%'+p.share.toFixed(0)+'</td>'+
+      '<td class="num">'+(info.order!=null?info.order.toFixed(2)+'×':'—')+'</td>'+
+      '<td class="vr-info '+info.cls+'">'+info.text+'</td></tr>';
+  }).join('');
+  el.innerHTML =
+    '<div class="vp-sub">En güçlü 5 tepe <span>satıra dokun → o tepeye git</span></div>'+
+    '<table class="vp-table"><thead><tr><th>Hz</th><th>mm/s</th><th>Pay</th><th>Devir</th><th>Yorum</th></tr></thead><tbody>'+rows+'</tbody></table>'+
+    (s.f1 ? '<div class="vp-note">Devir frekansı: '+s.f1.toFixed(2)+' Hz ('+Math.round(s.f1*60)+' rpm, spektrumdan ölçülen). "Pay": tepenin toplam titreşim enerjisindeki yüzdesi.</div>'
+          : '<div class="vp-note">RPM girilirse tepelerin hangi devir katına denk geldiği ve olası arıza yorumu da gösterilir.</div>');
+  el.querySelectorAll('tr[data-f]').forEach(tr=>{
+    tr.addEventListener('click', ()=>{
+      const f = parseFloat(tr.dataset.f);
+      const half = Math.max(8, f*0.15);
+      velSetRange(f-half, f+half);
+      velSetCursor(f);
+    });
+  });
+}
+
+function velOrderMarkers(){
+  const s = velPanelState;
+  if(!s || !s.f1 || !s.showOrders) return [];
+  const out = [];
+  for(let h=1; h<=10 && h*s.f1<=VEL_F_HIGH; h++){
+    out.push({ freq: h*s.f1, label: h+'×', color: h===1 ? '#ff9f43' : (h===2 ? '#feca57' : '#6c7a70') });
+  }
+  return out;
+}
+
+function velRenderControls(){
+  const s = velPanelState; const el = document.getElementById('velControls');
+  if(!el || !s) return;
+  const presets = s.f1
+    ? [['Tümü',0,VEL_F_HIGH],['0–4× devir',0,s.f1*4.3],['0–10× devir',0,s.f1*10.5]]
+    : [['Tümü',0,VEL_F_HIGH],['0–100 Hz',0,100],['0–300 Hz',0,300]];
+  let html = presets.map(p=>'<button type="button" class="vp-chip" data-min="'+p[1]+'" data-max="'+p[2]+'">'+p[0]+'</button>').join('');
+  html += '<span class="vp-sep"></span>';
+  html += '<button type="button" class="vp-chip toggle'+(s.showOrders && s.f1?' on':'')+'" id="vpOrders"'+(s.f1?'':' disabled title="RPM girilmemiş"')+'>Devir çizgileri</button>';
+  html += '<button type="button" class="vp-chip toggle'+(s.compare?' on':'')+'" id="vpCompare"'+(s.prevPts?'':' disabled')+'>'+(s.prevPts?'Önceki ölçüm':'Önceki ölçüm yok')+'</button>';
+  el.innerHTML = html;
+  el.querySelectorAll('.vp-chip[data-min]').forEach(b=>{
+    b.addEventListener('click', ()=> velSetRange(parseFloat(b.dataset.min), parseFloat(b.dataset.max)));
+  });
+  const bo = document.getElementById('vpOrders');
+  if(bo) bo.addEventListener('click', ()=>{
+    s.showOrders = !s.showOrders;
+    charts.vel.options.plugins.bearingMarkers = { markers: velOrderMarkers() };
+    charts.vel.update('none'); velRenderControls();
+  });
+  const bc = document.getElementById('vpCompare');
+  if(bc) bc.addEventListener('click', ()=>{ s.compare = !s.compare; velApplyDatasets(); velRenderControls(); });
+  const note = document.getElementById('velCompareNote');
+  if(note){
+    note.style.display = (s.compare && s.prevPts) ? 'block' : 'none';
+    note.innerHTML = (s.compare && s.prevPts)
+      ? 'Karşılaştırma: gri kesikli çizgi = '+s.prevLabel+'. Önceki ölçümler ≈3 Hz çözünürlükte kayıtlı olduğundan, adil olsun diye güncel ölçüm de aynı çözünürlükte gösteriliyor.'
+      : '';
+  }
+}
+
+function velApplyDatasets(){
+  const s = velPanelState; const c = charts.vel;
+  const color = AXIS_COLORS[s.ax];
+  const ds = [{ label:s.ax+' Hız (mm/s)', data: velActivePts(), borderColor:color, borderWidth:1.2, pointRadius:0, tension:0 }];
+  if(s.compare && s.prevPts){
+    ds.push({ label:'Önceki', data:s.prevPts, borderColor:VEL_PREV_COLOR, borderWidth:1.1, borderDash:[4,3], pointRadius:0, tension:0 });
+  }
+  c.data.datasets = ds;
+  if(c.options.plugins.legend) c.options.plugins.legend.display = ds.length > 1;
+  autoscaleYVisible(c, c.options.scales.x.min ?? 0, c.options.scales.x.max ?? VEL_F_HIGH);
+  c.update('none');
+  if(s.cursorF != null) velSetCursor(s.cursorF); else velRenderReadout();
+}
+
+// Bu noktanın kayıtlı ölçümlerinden, ekrandaki canlı ölçüm OLMAYAN en yenisini bulur.
+function velPreviousDoc(ax){
+  const docs = (typeof trendDocsData !== 'undefined' && trendDocsData) ? trendDocsData : [];
+  const sp = axisSpectra[ax];
+  for(let i=docs.length-1;i>=0;i--){
+    const d = docs[i];
+    if(!d || !d.velSpectrum || !d.velSpectrum[ax] || !d.velSpectrum[ax].f) continue;
+    // Canlı ölçüm kaydedildiyse en yeni kayıt odur — RMS değerleri birebir aynıysa atla.
+    const same = d.velRMS && ['X','Y','Z'].every(a=> axisSpectra[a] && d.velRMS[a] === Math.round(axisSpectra[a].rmsVelocity*1000)/1000);
+    if(same) continue;
+    return d;
+  }
+  return null;
+}
+
+// showDetail() içinden çağrılır: hız grafiğini kurar ve paneli bağlar.
+function setupVelPanel(ax){
+  const {freqs, velAmp} = axisSpectra[ax];
+  const rpm = parseFloat(document.getElementById('rpmInput').value) || null;
+  const fullPts = [];
+  for(let k=0;k<freqs.length && freqs[k]<=VEL_F_HIGH;k++) fullPts.push({x:freqs[k], y:velAmp[k]});
+  const prevDoc = velPreviousDoc(ax);
+  let prevPts = null, prevLabel = '', binnedPts = fullPts;
+  if(prevDoc){
+    const pv = prevDoc.velSpectrum[ax];
+    prevPts = pv.f.map((f,i)=>({x:f, y:pv.v[i]}));
+    const ts = prevDoc.timestamp && prevDoc.timestamp.toDate ? prevDoc.timestamp.toDate() : null;
+    prevLabel = 'önceki ölçüm' + (ts ? ' ('+ts.toLocaleDateString('tr-TR')+')' : '') + (prevDoc.velRMS && prevDoc.velRMS[ax]!=null ? ', '+prevDoc.velRMS[ax].toFixed(2)+' mm/s RMS' : '');
+    const ds = downsampleSpectrum(freqs, velAmp, pv.f.length, VEL_F_LOW, VEL_F_HIGH);
+    binnedPts = ds.f.map((f,i)=>({x:f, y:ds.v[i]}));
+  }
+  const keepCompare = velPanelState ? velPanelState.compare : false;
+  velPanelState = { ax, rpm, f1: velShaftHz(rpm), fullPts, binnedPts, prevPts, prevLabel,
+                    compare: keepCompare && !!prevPts, showOrders: true, cursorF: null };
+
+  if(charts.vel) charts.vel.destroy();
+  const opts = chartOptions('Hz', 'mm/s', false, VEL_F_HIGH);
+  opts.scales.x.min = 0;
+  opts.scales.x.ticks.includeBounds = false;
+  opts.plugins.bearingMarkers = { markers: velOrderMarkers() };
+  opts.plugins.velCursor = { x:null };
+  opts.plugins.tooltip = { enabled:false };
+  opts.plugins.legend = opts.plugins.legend || {}; opts.plugins.legend.display = false;
+  charts.vel = new Chart(document.getElementById('chartDetailVel'), {
+    type:'line', data:{ datasets:[] }, options: opts
+  });
+  attachZoomPan(charts.vel, 'chartDetailVel', 0, VEL_F_HIGH);
+  velApplyDatasets();
+
+  const canvas = document.getElementById('chartDetailVel');
+  if(!canvas.dataset.tapBound){
+    canvas.dataset.tapBound = '1';
+    canvas.addEventListener('charttap', (e)=>{
+      const c = charts.vel; if(!c) return;
+      const rect = canvas.getBoundingClientRect();
+      const px = e.detail.clientX - rect.left;
+      if(px < c.chartArea.left || px > c.chartArea.right) return;
+      velSetCursor(c.scales.x.getValueForPixel(px));
+    });
+  }
+  document.getElementById('btnResetZoomVel').onclick = ()=> resetZoom(charts.vel, 0, VEL_F_HIGH);
+  velRenderControls();
+  velRenderReadout();
+  velRenderPeaks();
+}
+
 function showDetail(ax){
   if(!axisSpectra[ax]) return; // henüz ölçüm alınmadı
   currentDetailAxis = ax;
@@ -3118,18 +3539,9 @@ function showDetail(ax){
   const {freqs, psd, velAmp} = axisSpectra[ax];
   const nyquist = freqs[freqs.length-1];
 
-  const velPts = decimate(Array.from(velAmp), 1500).map(p=>({x:freqs[p.x], y:p.y}));
-  if(charts.vel) charts.vel.destroy();
-  charts.vel = new Chart(document.getElementById('chartDetailVel'), {
-    type:'line',
-    data:{ datasets:[{ label:ax+' Hız (mm/s)', data:velPts, borderColor:color, borderWidth:1.2, pointRadius:0, tension:0 }] },
-    options: chartOptions('Hz', 'mm/s', false, VEL_F_HIGH)
-  });
-  attachZoomPan(charts.vel, 'chartDetailVel', 0, VEL_F_HIGH);
-  const btnResetVel = document.getElementById('btnResetZoomVel');
-  btnResetVel.onclick = ()=> resetZoom(charts.vel, 0, VEL_F_HIGH);
+  setupVelPanel(ax);
 
-  const psdPts = decimate(floorLogSeries(Array.from(psd)), 1500).map(p=>({x:freqs[p.x], y:p.y}));
+  const psdPts = decimate(floorLogSeries(Array.from(psd)), 7000).map(p=>({x:freqs[p.x], y:p.y})); // tam çözünürlük (zum için)
   if(charts.psd) charts.psd.destroy();
 
   const bearingCode = bearingCodeForPoint();
@@ -3235,7 +3647,7 @@ function showDetail(ax){
 // kez bağlanır (dataset.zoomBound koruması) ve güncel chart/aralık bilgisi zoomTargets
 // kaydından okunur — böylece eski/yok edilmiş chart nesnelerine bağlı yığılmış dinleyici
 // oluşmaz.
-const zoomTargets = {};
+const zoomTargets = new Map();
 
 // X ekseni yakınlaştırıldığında Y ekseni hâlâ TÜM veriye göre sabit kalıyordu
 // (Chart.js varsayılanı budur) — bu yüzden dar bir bölgeye zum yapınca eğri
@@ -3284,7 +3696,9 @@ function autoscaleYVisible(chart, xMin, xMax){
     }
     if(lo===hi){ const d=Math.abs(lo)*0.1||1; lo-=d; hi+=d; }
     const pad = (hi-lo)*0.12 || Math.abs(hi)*0.1 || 1;
-    chart.options.scales.y.min = chart._clipPeaks ? 0 : lo-pad;
+    // Spektrumlar negatif olamaz: taban 0'da sabitlenir (eksende -0.13 gibi anlamsız değer görünmesin)
+    chart.options.scales.y.min = (chart._clipPeaks || lo >= 0) ? 0 : lo-pad;
+    if(chart.options.scales.y.ticks) chart.options.scales.y.ticks.includeBounds = false; // 1.34672532 gibi ham sınır değerleri etiket olarak yazılmasın
     chart.options.scales.y.max = hi+pad;
     if(chart._clipPeaks && chart.options.scales.y.title){
       if(chart._yBase == null) chart._yBase = chart.options.scales.y.title.text;
@@ -3295,121 +3709,171 @@ function autoscaleYVisible(chart, xMin, xMax){
   }
 }
 
-function attachZoomPan(chart, canvasId, baseMin, baseMax){
-  zoomTargets[canvasId] = { chart, baseMin, baseMax };
-  const canvas = document.getElementById(canvasId);
-  if(!canvas || canvas.dataset.zoomBound) return;
+// ---- Yakınlaştırma/kaydırma motoru (v2) ----
+// Önceki sürümdeki üç hata giderildi:
+//  1) Çift dokunma algılaması her touchstart'ta (iki parmaklı pinch dahil)
+//     zamanı güncelliyordu; peş peşe pinch yapınca (tepe noktasına yaklaşırken
+//     tam olarak bu yapılır) ilk parmağın inişi "çift dokunma" sayılıp grafik
+//     tamamen uzaklaştırılıyordu. Artık yalnızca GERÇEK dokunmalar (tek parmak,
+//     kısa süre, hareketsiz, pinch içermeyen) çift dokunma sayılır.
+//  2) Pinch mesafesi sadece yatay farktan ölçülüyordu; parmaklar dikeye
+//     yakın açılınca mesafe ~0 olup grafik tam uzaklaşıyordu. Artık yatay
+//     açıklığı 40 px'in altındaki (dikey) pinch yok sayılır.
+//  3) Pinch mevcut aralığın ortasına göre yapılıyordu; tepe noktası ekrandan
+//     kayıyordu. Artık parmakların altındaki frekans parmakların altında kalır.
+// Ayrıca minimum aralık %2'den (1000 Hz'de 20 Hz) ~4 Hz'e indirildi ve tek
+// parmakla dikey kaydırma sayfayı kaydırır, yatay kaydırma grafiği kaydırır.
+function zpChartOf(t){ return (t.chart && t.chart.current) ? t.chart.current : t.chart; }
+function attachZoomPan(chart, canvasRef, baseMin, baseMax){
+  var canvas = (typeof canvasRef === 'string') ? document.getElementById(canvasRef) : canvasRef;
+  if(!canvas) return;
+  zoomTargets.set(canvas, { chart: chart, baseMin: baseMin, baseMax: baseMax });
+  canvas.style.touchAction = 'pan-y';
+  if(canvas.dataset.zoomBound) return;
   canvas.dataset.zoomBound = '1';
 
-  function target(){ return zoomTargets[canvasId]; }
-
+  function target(){ return zoomTargets.get(canvas); }
+  function cur(){ return zpChartOf(target()); }
   function clampRange(min, max){
-    const t = target();
-    const fullRange = t.baseMax - t.baseMin;
-    const minRange = fullRange * 0.02;
-    let range = max - min;
-    if(range > fullRange) range = fullRange;
-    if(range < minRange) range = minRange;
-    if(min < t.baseMin){ min = t.baseMin; max = min + range; }
+    var t = target();
+    var full = t.baseMax - t.baseMin;
+    var minRange = Math.min(full, Math.max(full * 0.004, 4));
+    var range = max - min;
+    if(!isFinite(range) || range > full) range = full;
+    if(range < minRange){ var mid = (min + max) / 2; range = minRange; min = mid - range / 2; }
+    if(min < t.baseMin){ min = t.baseMin; }
+    max = min + range;
     if(max > t.baseMax){ max = t.baseMax; min = max - range; }
     return [min, max];
   }
+  var pending = null, rafId = 0;
+  function apply(min, max){
+    var r = clampRange(min, max);
+    pending = r;
+    if(rafId) return;
+    rafId = requestAnimationFrame(function(){
+      rafId = 0;
+      var c = cur(); if(!c || !pending) return;
+      c.options.scales.x.min = pending[0];
+      c.options.scales.x.max = pending[1];
+      autoscaleYVisible(c, pending[0], pending[1]);
+      c.update('none');
+      pending = null;
+    });
+  }
+  function plotGeom(){
+    var c = cur(); var xs = c.scales.x;
+    var rect = canvas.getBoundingClientRect();
+    return { left: rect.left + xs.left, width: (xs.right - xs.left) || 1, min: xs.min, max: xs.max };
+  }
+  function doReset(){ var t = target(); resetZoom(zpChartOf(t), t.baseMin, t.baseMax); }
 
-  canvas.addEventListener('wheel', (e)=>{
+  // --- Fare (masaüstü) ---
+  canvas.addEventListener('wheel', function(e){
     e.preventDefault();
-    const t = target(); const c = t.chart;
-    const xScale = c.scales.x;
-    const rect = canvas.getBoundingClientRect();
-    const xVal = xScale.getValueForPixel(e.clientX - rect.left);
-    const curMin = xScale.min, curMax = xScale.max;
-    const range = curMax - curMin;
-    const factor = e.deltaY < 0 ? 0.82 : 1.22;
-    let newRange = range * factor;
-    let newMin = xVal - (xVal - curMin) / range * newRange;
-    let newMax = newMin + newRange;
-    [newMin, newMax] = clampRange(newMin, newMax);
-    c.options.scales.x.min = newMin;
-    c.options.scales.x.max = newMax;
-    autoscaleYVisible(c, newMin, newMax);
-    c.update('none');
+    var g = plotGeom();
+    var frac = Math.min(1, Math.max(0, (e.clientX - g.left) / g.width));
+    var range = g.max - g.min;
+    var xVal = g.min + frac * range;
+    var newRange = range * (e.deltaY < 0 ? 0.8 : 1.25);
+    apply(xVal - frac * newRange, xVal - frac * newRange + newRange);
   }, {passive:false});
-
-  canvas.addEventListener('dblclick', ()=>{ const t = target(); resetZoom(t.chart, t.baseMin, t.baseMax); });
-
-  let dragState = null;
-  canvas.addEventListener('mousedown', (e)=>{
-    const xScale = target().chart.scales.x;
-    dragState = { x:e.clientX, min:xScale.min, max:xScale.max };
+  canvas.addEventListener('dblclick', doReset);
+  var drag = null;
+  canvas.addEventListener('mousedown', function(e){ var g = plotGeom(); drag = { x: e.clientX, g: g }; });
+  window.addEventListener('mousemove', function(e){
+    if(!drag) return;
+    var g = drag.g; var perPx = (g.max - g.min) / g.width;
+    var dx = e.clientX - drag.x;
+    apply(g.min - dx * perPx, g.max - dx * perPx);
   });
-  window.addEventListener('mousemove', (e)=>{
-    if(!dragState) return;
-    const c = target().chart;
-    const xScale = c.scales.x;
-    const pixToVal = (dragState.max - dragState.min) / (xScale.right - xScale.left || 1);
-    const dx = e.clientX - dragState.x;
-    let newMin = dragState.min - dx * pixToVal;
-    let newMax = dragState.max - dx * pixToVal;
-    [newMin, newMax] = clampRange(newMin, newMax);
-    c.options.scales.x.min = newMin;
-    c.options.scales.x.max = newMax;
-    autoscaleYVisible(c, newMin, newMax);
-    c.update('none');
+  window.addEventListener('mouseup', function(e){
+    if(drag && Math.abs(e.clientX - drag.x) < 4) canvas.dispatchEvent(new CustomEvent('charttap', { detail: { clientX: e.clientX } }));
+    drag = null;
   });
-  window.addEventListener('mouseup', ()=>{ dragState = null; });
 
-  let touchState = null;
-  let lastTapTime = 0;
-  canvas.addEventListener('touchstart', (e)=>{
-    const now = Date.now();
-    if(e.touches.length===1 && now - lastTapTime < 300){
-      const t = target(); resetZoom(t.chart, t.baseMin, t.baseMax);
-      touchState = null;
-      return;
-    }
-    lastTapTime = now;
-    const c = target().chart;
-    if(e.touches.length===2){
-      const [t1,t2] = e.touches;
-      touchState = { mode:'pinch', dist:Math.abs(t1.clientX-t2.clientX), min:c.scales.x.min, max:c.scales.x.max };
-    } else if(e.touches.length===1){
-      touchState = { mode:'pan', x:e.touches[0].clientX, min:c.scales.x.min, max:c.scales.x.max };
-    }
+  // --- Dokunmatik (mobil) ---
+  var st = null;            // aktif hareket durumu
+  var hadPinch = false;     // bu dokunma dizisinde pinch oldu mu
+  var lastTap = null;       // {time, x, y} — çift dokunma için
+  function startPinch(t1, t2){
+    var g = plotGeom();
+    var midX = (t1.clientX + t2.clientX) / 2;
+    var frac = (midX - g.left) / g.width;
+    st = { mode: 'pinch', g: g, dx0: Math.abs(t1.clientX - t2.clientX),
+           anchor: g.min + frac * (g.max - g.min) };
+    hadPinch = true;
+  }
+  function startOne(touch, asPan){
+    st = { mode: asPan ? 'pan' : 'pending', g: plotGeom(), x0: touch.clientX, y0: touch.clientY,
+           t0: Date.now(), moved: false };
+  }
+  canvas.addEventListener('touchstart', function(e){
+    if(e.touches.length === 1){ hadPinch = false; startOne(e.touches[0], false); }
+    else if(e.touches.length === 2){ startPinch(e.touches[0], e.touches[1]); }
   }, {passive:true});
 
-  canvas.addEventListener('touchmove', (e)=>{
-    if(!touchState) return;
-    const c = target().chart;
-    if(touchState.mode==='pinch' && e.touches.length===2){
+  canvas.addEventListener('touchmove', function(e){
+    if(!st) return;
+    if(st.mode === 'pinch' && e.touches.length >= 2){
       e.preventDefault();
-      const [t1,t2] = e.touches;
-      const dist = Math.abs(t1.clientX-t2.clientX) || 1;
-      const scaleFactor = touchState.dist / dist;
-      const range = touchState.max - touchState.min;
-      const mid = (touchState.min + touchState.max) / 2;
-      let newRange = range * scaleFactor;
-      let newMin = mid - newRange/2, newMax = mid + newRange/2;
-      [newMin, newMax] = clampRange(newMin, newMax);
-      c.options.scales.x.min = newMin;
-      c.options.scales.x.max = newMax;
-      autoscaleYVisible(c, newMin, newMax);
-      c.update('none');
-    } else if(touchState.mode==='pan' && e.touches.length===1){
+      var t1 = e.touches[0], t2 = e.touches[1];
+      var dx = Math.abs(t1.clientX - t2.clientX);
+      if(st.dx0 < 40){
+        // Dikey pinch: henüz yatay açıklık yok — yeterince açılınca başlangıcı buradan al.
+        if(dx >= 40) startPinch(t1, t2);
+        return;
+      }
+      if(dx < 20) dx = 20;
+      var g = st.g;
+      var newRange = (g.max - g.min) * (st.dx0 / dx);
+      var frac = ((t1.clientX + t2.clientX) / 2 - g.left) / g.width;
+      var newMin = st.anchor - frac * newRange;
+      apply(newMin, newMin + newRange);
+      return;
+    }
+    if(e.touches.length !== 1) return;
+    var p = e.touches[0];
+    var ddx = p.clientX - st.x0, ddy = p.clientY - st.y0;
+    if(st.mode === 'pending'){
+      if(Math.abs(ddx) < 8 && Math.abs(ddy) < 8) return;
+      st.moved = true;
+      if(Math.abs(ddy) > Math.abs(ddx)){ st = null; return; } // dikey: sayfa kaysın
+      st.mode = 'pan';
+    }
+    if(st.mode === 'pan'){
       e.preventDefault();
-      const xScale = c.scales.x;
-      const pixToVal = (touchState.max - touchState.min) / (xScale.right - xScale.left || 1);
-      const dx = e.touches[0].clientX - touchState.x;
-      let newMin = touchState.min - dx * pixToVal;
-      let newMax = touchState.max - dx * pixToVal;
-      [newMin, newMax] = clampRange(newMin, newMax);
-      c.options.scales.x.min = newMin;
-      c.options.scales.x.max = newMax;
-      autoscaleYVisible(c, newMin, newMax);
-      c.update('none');
+      var gg = st.g; var perPx = (gg.max - gg.min) / gg.width;
+      apply(gg.min - ddx * perPx, gg.max - ddx * perPx);
     }
   }, {passive:false});
 
-  canvas.addEventListener('touchend', ()=>{ touchState = null; });
+  canvas.addEventListener('touchend', function(e){
+    if(e.touches.length === 1){
+      // Pinch bitti, bir parmak kaldı: zıplamadan kaydırmaya geç.
+      startOne(e.touches[0], true);
+      return;
+    }
+    if(e.touches.length >= 2){ startPinch(e.touches[0], e.touches[1]); return; }
+    var wasTap = st && st.mode === 'pending' && !st.moved && !hadPinch && (Date.now() - st.t0) < 250;
+    if(wasTap){
+      canvas.dispatchEvent(new CustomEvent('charttap', { detail: { clientX: st.x0 } }));
+      var now = Date.now();
+      if(lastTap && now - lastTap.time < 320 &&
+         Math.abs(st.x0 - lastTap.x) < 40 && Math.abs(st.y0 - lastTap.y) < 40){
+        lastTap = null;
+        doReset();
+      } else {
+        lastTap = { time: now, x: st.x0, y: st.y0 };
+      }
+    } else {
+      lastTap = null;
+    }
+    st = null;
+  });
+  canvas.addEventListener('touchcancel', function(){ st = null; lastTap = null; });
 }
+// ---- /Yakınlaştırma motoru ----
 
 function resetZoom(chart, baseMin, baseMax){
   chart.options.scales.x.min = baseMin;
@@ -4042,16 +4506,16 @@ function chartOptions(xLabel, yLabel, logY, xMax){
     interaction:{ mode:'nearest', intersect:false },
     scales:{
       x:{ type:'linear', max:xMax, title:{display:true, text:xLabel, color:'#7c8a80'},
-          ticks:{color:'#7c8a80', font:{family:'JetBrains Mono', size:10}},
+          ticks:{color:'#7c8a80', font:{family:"'JetBrains Mono', ui-monospace, Menlo, monospace", size:10}},
           grid:{color:'#1a221c'} },
       y:{ type: logY?'logarithmic':'linear', title:{display:true, text:yLabel, color:'#7c8a80'},
-          ticks:{color:'#7c8a80', font:{family:'JetBrains Mono', size:10},
+          ticks:{color:'#7c8a80', font:{family:"'JetBrains Mono', ui-monospace, Menlo, monospace", size:10},
                  callback: logY ? (v)=>formatCompactNumber(v) : undefined,
                  maxTicksLimit: logY ? 8 : undefined},
           grid:{color:'#1a221c'} }
     },
     plugins:{
-      legend:{ labels:{ color:'#d9e4dc', font:{family:'JetBrains Mono', size:11} } }
+      legend:{ labels:{ color:'#d9e4dc', font:{family:"'JetBrains Mono', ui-monospace, Menlo, monospace", size:11} } }
     }
   };
 }
@@ -4741,7 +5205,9 @@ function autoscaleYVisible(chart, xMin, xMax){
     }
     if(lo===hi){ const d=Math.abs(lo)*0.1||1; lo-=d; hi+=d; }
     const pad = (hi-lo)*0.12 || Math.abs(hi)*0.1 || 1;
-    chart.options.scales.y.min = chart._clipPeaks ? 0 : lo-pad;
+    // Spektrumlar negatif olamaz: taban 0'da sabitlenir (eksende -0.13 gibi anlamsız değer görünmesin)
+    chart.options.scales.y.min = (chart._clipPeaks || lo >= 0) ? 0 : lo-pad;
+    if(chart.options.scales.y.ticks) chart.options.scales.y.ticks.includeBounds = false; // 1.34672532 gibi ham sınır değerleri etiket olarak yazılmasın
     chart.options.scales.y.max = hi+pad;
     if(chart._clipPeaks && chart.options.scales.y.title){
       if(chart._yBase == null) chart._yBase = chart.options.scales.y.title.text;
@@ -4752,65 +5218,172 @@ function autoscaleYVisible(chart, xMin, xMax){
   }
 }
 
-function attachZoomPan(chart, canvas, baseMin, baseMax){
-  zoomTargets.set(canvas, { chart, baseMin, baseMax });
+// ---- Yakınlaştırma/kaydırma motoru (v2) ----
+// Önceki sürümdeki üç hata giderildi:
+//  1) Çift dokunma algılaması her touchstart'ta (iki parmaklı pinch dahil)
+//     zamanı güncelliyordu; peş peşe pinch yapınca (tepe noktasına yaklaşırken
+//     tam olarak bu yapılır) ilk parmağın inişi "çift dokunma" sayılıp grafik
+//     tamamen uzaklaştırılıyordu. Artık yalnızca GERÇEK dokunmalar (tek parmak,
+//     kısa süre, hareketsiz, pinch içermeyen) çift dokunma sayılır.
+//  2) Pinch mesafesi sadece yatay farktan ölçülüyordu; parmaklar dikeye
+//     yakın açılınca mesafe ~0 olup grafik tam uzaklaşıyordu. Artık yatay
+//     açıklığı 40 px'in altındaki (dikey) pinch yok sayılır.
+//  3) Pinch mevcut aralığın ortasına göre yapılıyordu; tepe noktası ekrandan
+//     kayıyordu. Artık parmakların altındaki frekans parmakların altında kalır.
+// Ayrıca minimum aralık %2'den (1000 Hz'de 20 Hz) ~4 Hz'e indirildi ve tek
+// parmakla dikey kaydırma sayfayı kaydırır, yatay kaydırma grafiği kaydırır.
+function zpChartOf(t){ return (t.chart && t.chart.current) ? t.chart.current : t.chart; }
+function attachZoomPan(chart, canvasRef, baseMin, baseMax){
+  var canvas = (typeof canvasRef === 'string') ? document.getElementById(canvasRef) : canvasRef;
+  if(!canvas) return;
+  zoomTargets.set(canvas, { chart: chart, baseMin: baseMin, baseMax: baseMax });
+  canvas.style.touchAction = 'pan-y';
   if(canvas.dataset.zoomBound) return;
   canvas.dataset.zoomBound = '1';
+
   function target(){ return zoomTargets.get(canvas); }
-  function clamp(min,max){
-    const t = target(); const full = t.baseMax - t.baseMin;
-    const minRange = full*0.02; let range = max-min;
-    if(range>full) range = full; if(range<minRange) range = minRange;
-    if(min<t.baseMin){ min=t.baseMin; max=min+range; }
-    if(max>t.baseMax){ max=t.baseMax; min=max-range; }
-    return [min,max];
+  function cur(){ return zpChartOf(target()); }
+  function clampRange(min, max){
+    var t = target();
+    var full = t.baseMax - t.baseMin;
+    var minRange = Math.min(full, Math.max(full * 0.004, 4));
+    var range = max - min;
+    if(!isFinite(range) || range > full) range = full;
+    if(range < minRange){ var mid = (min + max) / 2; range = minRange; min = mid - range / 2; }
+    if(min < t.baseMin){ min = t.baseMin; }
+    max = min + range;
+    if(max > t.baseMax){ max = t.baseMax; min = max - range; }
+    return [min, max];
   }
-  canvas.addEventListener('wheel', (e)=>{
+  var pending = null, rafId = 0;
+  function apply(min, max){
+    var r = clampRange(min, max);
+    pending = r;
+    if(rafId) return;
+    rafId = requestAnimationFrame(function(){
+      rafId = 0;
+      var c = cur(); if(!c || !pending) return;
+      c.options.scales.x.min = pending[0];
+      c.options.scales.x.max = pending[1];
+      autoscaleYVisible(c, pending[0], pending[1]);
+      c.update('none');
+      pending = null;
+    });
+  }
+  function plotGeom(){
+    var c = cur(); var xs = c.scales.x;
+    var rect = canvas.getBoundingClientRect();
+    return { left: rect.left + xs.left, width: (xs.right - xs.left) || 1, min: xs.min, max: xs.max };
+  }
+  function doReset(){ var t = target(); resetZoom(zpChartOf(t), t.baseMin, t.baseMax); }
+
+  // --- Fare (masaüstü) ---
+  canvas.addEventListener('wheel', function(e){
     e.preventDefault();
-    const t = target(); const c = t.chart.current; const xScale = c.scales.x;
-    const rect = canvas.getBoundingClientRect();
-    const xVal = xScale.getValueForPixel(e.clientX-rect.left);
-    const curMin=xScale.min, curMax=xScale.max, range=curMax-curMin;
-    const factor = e.deltaY<0?0.82:1.22;
-    let newRange = range*factor;
-    let newMin = xVal-(xVal-curMin)/range*newRange, newMax = newMin+newRange;
-    [newMin,newMax] = clamp(newMin,newMax);
-    c.options.scales.x.min=newMin; c.options.scales.x.max=newMax; autoscaleYVisible(c,newMin,newMax); c.update('none');
+    var g = plotGeom();
+    var frac = Math.min(1, Math.max(0, (e.clientX - g.left) / g.width));
+    var range = g.max - g.min;
+    var xVal = g.min + frac * range;
+    var newRange = range * (e.deltaY < 0 ? 0.8 : 1.25);
+    apply(xVal - frac * newRange, xVal - frac * newRange + newRange);
   }, {passive:false});
-  canvas.addEventListener('dblclick', ()=>{ const t=target(); resetZoom(t.chart.current, t.baseMin, t.baseMax); });
-  let drag=null;
-  canvas.addEventListener('mousedown', (e)=>{ const xScale=target().chart.current.scales.x; drag={x:e.clientX,min:xScale.min,max:xScale.max}; });
-  window.addEventListener('mousemove', (e)=>{
-    if(!drag) return; const c=target().chart.current; const xScale=c.scales.x;
-    const pixToVal=(drag.max-drag.min)/((xScale.right-xScale.left)||1);
-    const dx=e.clientX-drag.x; let newMin=drag.min-dx*pixToVal, newMax=drag.max-dx*pixToVal;
-    [newMin,newMax]=clamp(newMin,newMax); c.options.scales.x.min=newMin; c.options.scales.x.max=newMax; autoscaleYVisible(c,newMin,newMax); c.update('none');
+  canvas.addEventListener('dblclick', doReset);
+  var drag = null;
+  canvas.addEventListener('mousedown', function(e){ var g = plotGeom(); drag = { x: e.clientX, g: g }; });
+  window.addEventListener('mousemove', function(e){
+    if(!drag) return;
+    var g = drag.g; var perPx = (g.max - g.min) / g.width;
+    var dx = e.clientX - drag.x;
+    apply(g.min - dx * perPx, g.max - dx * perPx);
   });
-  window.addEventListener('mouseup', ()=>{ drag=null; });
-  let touch=null, lastTap=0;
-  canvas.addEventListener('touchstart', (e)=>{
-    const now=Date.now();
-    if(e.touches.length===1 && now-lastTap<300){ const t=target(); resetZoom(t.chart.current,t.baseMin,t.baseMax); touch=null; return; }
-    lastTap=now; const c=target().chart.current;
-    if(e.touches.length===2){ const [t1,t2]=e.touches; touch={mode:'pinch', dist:Math.abs(t1.clientX-t2.clientX), min:c.scales.x.min, max:c.scales.x.max}; }
-    else if(e.touches.length===1){ touch={mode:'pan', x:e.touches[0].clientX, min:c.scales.x.min, max:c.scales.x.max}; }
+  window.addEventListener('mouseup', function(e){
+    if(drag && Math.abs(e.clientX - drag.x) < 4) canvas.dispatchEvent(new CustomEvent('charttap', { detail: { clientX: e.clientX } }));
+    drag = null;
+  });
+
+  // --- Dokunmatik (mobil) ---
+  var st = null;            // aktif hareket durumu
+  var hadPinch = false;     // bu dokunma dizisinde pinch oldu mu
+  var lastTap = null;       // {time, x, y} — çift dokunma için
+  function startPinch(t1, t2){
+    var g = plotGeom();
+    var midX = (t1.clientX + t2.clientX) / 2;
+    var frac = (midX - g.left) / g.width;
+    st = { mode: 'pinch', g: g, dx0: Math.abs(t1.clientX - t2.clientX),
+           anchor: g.min + frac * (g.max - g.min) };
+    hadPinch = true;
+  }
+  function startOne(touch, asPan){
+    st = { mode: asPan ? 'pan' : 'pending', g: plotGeom(), x0: touch.clientX, y0: touch.clientY,
+           t0: Date.now(), moved: false };
+  }
+  canvas.addEventListener('touchstart', function(e){
+    if(e.touches.length === 1){ hadPinch = false; startOne(e.touches[0], false); }
+    else if(e.touches.length === 2){ startPinch(e.touches[0], e.touches[1]); }
   }, {passive:true});
-  canvas.addEventListener('touchmove', (e)=>{
-    if(!touch) return; const c=target().chart.current;
-    if(touch.mode==='pinch' && e.touches.length===2){
-      e.preventDefault(); const [t1,t2]=e.touches; const dist=Math.abs(t1.clientX-t2.clientX)||1;
-      const scaleFactor=touch.dist/dist; const range=touch.max-touch.min; const mid=(touch.min+touch.max)/2;
-      let newRange=range*scaleFactor; let newMin=mid-newRange/2, newMax=mid+newRange/2;
-      [newMin,newMax]=clamp(newMin,newMax); c.options.scales.x.min=newMin; c.options.scales.x.max=newMax; autoscaleYVisible(c,newMin,newMax); c.update('none');
-    } else if(touch.mode==='pan' && e.touches.length===1){
-      e.preventDefault(); const xScale=c.scales.x;
-      const pixToVal=(touch.max-touch.min)/((xScale.right-xScale.left)||1);
-      const dx=e.touches[0].clientX-touch.x; let newMin=touch.min-dx*pixToVal, newMax=touch.max-dx*pixToVal;
-      [newMin,newMax]=clamp(newMin,newMax); c.options.scales.x.min=newMin; c.options.scales.x.max=newMax; autoscaleYVisible(c,newMin,newMax); c.update('none');
+
+  canvas.addEventListener('touchmove', function(e){
+    if(!st) return;
+    if(st.mode === 'pinch' && e.touches.length >= 2){
+      e.preventDefault();
+      var t1 = e.touches[0], t2 = e.touches[1];
+      var dx = Math.abs(t1.clientX - t2.clientX);
+      if(st.dx0 < 40){
+        // Dikey pinch: henüz yatay açıklık yok — yeterince açılınca başlangıcı buradan al.
+        if(dx >= 40) startPinch(t1, t2);
+        return;
+      }
+      if(dx < 20) dx = 20;
+      var g = st.g;
+      var newRange = (g.max - g.min) * (st.dx0 / dx);
+      var frac = ((t1.clientX + t2.clientX) / 2 - g.left) / g.width;
+      var newMin = st.anchor - frac * newRange;
+      apply(newMin, newMin + newRange);
+      return;
+    }
+    if(e.touches.length !== 1) return;
+    var p = e.touches[0];
+    var ddx = p.clientX - st.x0, ddy = p.clientY - st.y0;
+    if(st.mode === 'pending'){
+      if(Math.abs(ddx) < 8 && Math.abs(ddy) < 8) return;
+      st.moved = true;
+      if(Math.abs(ddy) > Math.abs(ddx)){ st = null; return; } // dikey: sayfa kaysın
+      st.mode = 'pan';
+    }
+    if(st.mode === 'pan'){
+      e.preventDefault();
+      var gg = st.g; var perPx = (gg.max - gg.min) / gg.width;
+      apply(gg.min - ddx * perPx, gg.max - ddx * perPx);
     }
   }, {passive:false});
-  canvas.addEventListener('touchend', ()=>{ touch=null; });
+
+  canvas.addEventListener('touchend', function(e){
+    if(e.touches.length === 1){
+      // Pinch bitti, bir parmak kaldı: zıplamadan kaydırmaya geç.
+      startOne(e.touches[0], true);
+      return;
+    }
+    if(e.touches.length >= 2){ startPinch(e.touches[0], e.touches[1]); return; }
+    var wasTap = st && st.mode === 'pending' && !st.moved && !hadPinch && (Date.now() - st.t0) < 250;
+    if(wasTap){
+      canvas.dispatchEvent(new CustomEvent('charttap', { detail: { clientX: st.x0 } }));
+      var now = Date.now();
+      if(lastTap && now - lastTap.time < 320 &&
+         Math.abs(st.x0 - lastTap.x) < 40 && Math.abs(st.y0 - lastTap.y) < 40){
+        lastTap = null;
+        doReset();
+      } else {
+        lastTap = { time: now, x: st.x0, y: st.y0 };
+      }
+    } else {
+      lastTap = null;
+    }
+    st = null;
+  });
+  canvas.addEventListener('touchcancel', function(){ st = null; lastTap = null; });
 }
+// ---- /Yakınlaştırma motoru ----
+
 function resetZoom(chart, baseMin, baseMax){
   chart.options.scales.x.min=baseMin; chart.options.scales.x.max=baseMax;
   delete chart.options.scales.y.min; delete chart.options.scales.y.max;
@@ -4913,7 +5486,7 @@ document.addEventListener('click', (e)=>{
   if(op==='reset'){ resetZoom(chart, t.baseMin, t.baseMax); return; }
   const xScale = chart.scales.x;
   const curMin=xScale.min, curMax=xScale.max, range=curMax-curMin, mid=(curMin+curMax)/2;
-  const full = t.baseMax-t.baseMin, minRange = full*0.02;
+  const full = t.baseMax-t.baseMin, minRange = Math.min(full, Math.max(full*0.004, 4));
   let newRange = range*(op==='in'?0.7:(1/0.7));
   if(newRange>full) newRange=full; if(newRange<minRange) newRange=minRange;
   let newMin = mid-newRange/2, newMax = mid+newRange/2;

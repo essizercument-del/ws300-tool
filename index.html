@@ -543,17 +543,17 @@ const db = firebase.firestore();
     <div id="isoAnalysisText" style="font-size:13px; line-height:1.6; color:var(--text);"></div>
   </div>
 
+  <div class="panel" id="bearingAnalysisPanel">
+    <div class="panel-title">Rulman Arıza Frekansları</div>
+    <div id="bearingAnalysisText" style="font-size:13px; line-height:1.6; color:var(--text);"></div>
+    <div id="psdAnalysisText" style="font-size:13px; line-height:1.6; color:var(--text); margin-top:10px;"></div>
+  </div>
+
   <div class="panel">
     <div class="panel-title">Rulman Durumu — İvme PSD <span class="tag">G²/Hz vs Hz</span> <button class="btn-mini" id="btnResetZoomPsd" type="button">Yakınlaştırmayı sıfırla</button></div>
     <div class="vp-controls" id="psdBmChips"></div>
     <div style="position:relative; height:220px;"><canvas id="chartDetailPSD"></canvas></div>
     <div style="font-size:10px; color:var(--text-dim); text-align:center; margin:4px 0 2px;">tekerlek / iki parmak ile yakınlaştır · sürükleyerek kaydır · çift tıkla/dokun ile sıfırla</div>
-  </div>
-
-  <div class="panel" id="bearingAnalysisPanel">
-    <div class="panel-title">Rulman Arıza Frekansları</div>
-    <div id="bearingAnalysisText" style="font-size:13px; line-height:1.6; color:var(--text);"></div>
-    <div id="psdAnalysisText" style="font-size:13px; line-height:1.6; color:var(--text); margin-top:10px;"></div>
   </div>
 
   <div class="panel" id="envelopePanel">

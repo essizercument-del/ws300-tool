@@ -1983,7 +1983,9 @@ function exportComparisonHtmlReport(){
     }));
 
     const chartJsSource = getInlineScriptSource('Chart.js v4.4.4');
-    const html = buildComparisonReportHtml(axesSeries, trend, summaryRows, bearing, chartJsSource);
+    // Devir çizgileri/tepe yorumu için: ilk seçilen ölçümün devri (uygulamadaki karşılaştırma ekranıyla aynı)
+    const reportF1 = selectedDocs[0].shaftHz || (selectedDocs[0].rpm ? selectedDocs[0].rpm/60 : null);
+    const html = buildComparisonReportHtml(axesSeries, trend, summaryRows, bearing, chartJsSource, reportF1);
     const blob = new Blob([html], {type:'text/html'});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -2006,7 +2008,7 @@ document.getElementById('btnHistoryHtmlReport').addEventListener('click', export
 // grafik başına 1-3 serinin (seçilen ölçümler) üst üste bindirilmesi, ve üstte
 // bu noktaya ait genel RMS trend grafiği. Zoom/pan, rulman çizgisi aç/kapa ve
 // eksen sekmeleri, tekli rapor (buildStandaloneReportHtml) ile aynı mantık.
-function buildComparisonReportHtml(axesSeries, trend, summaryRows, bearing, chartJsSource){
+function buildComparisonReportHtml(axesSeries, trend, summaryRows, bearing, chartJsSource, shaftHz){
   const now = new Date();
   const stamp = now.toLocaleString('tr-TR');
   const axesPresent = ['X','Y','Z'].filter(ax=>axesSeries[ax]);
@@ -2050,8 +2052,10 @@ function buildComparisonReportHtml(axesSeries, trend, summaryRows, bearing, char
     return `
     <div class="axpanel" data-ax="${ax}" style="display:${i===0?'block':'none'}; border:1px solid #ccc; border-radius:0 6px 6px 6px; padding:14px;">
       <h3 style="font-size:13px; margin:6px 0 6px;">Hız Spektrumu Karşılaştırma (mm/s)</h3>
+      <div class="rv-top" data-ax="${ax}"></div>
       ${zoomToolbar('vel')}
       <div style="position:relative; height:240px;"><canvas class="chVel" data-ax="${ax}"></canvas></div>
+      <div class="rv-bottom" data-ax="${ax}"></div>
       <h3 style="font-size:13px; margin:16px 0 6px;">İvme PSD Karşılaştırma (G²/Hz)</h3>
       ${zoomToolbar('psd')}
       <div style="position:relative; height:240px;"><canvas class="chPsd" data-ax="${ax}"></canvas></div>
@@ -2123,6 +2127,228 @@ function buildComparisonReportHtml(axesSeries, trend, summaryRows, bearing, char
 <script>${safeChartJs}<\/script>
 <script>
 const AXES_SERIES = ${JSON.stringify(axesSeries).replace(/</g,'\\u003c')};
+const REPORT_F1 = ${JSON.stringify(shaftHz || null)};
+// ---- Hız spektrumu araçları (rapor sürümü): imleç, devir çizgileri, tepe tablosu, hazır aralıklar ----
+(function(){
+  var css = document.createElement('style');
+  css.textContent =
+    '.rv-top{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:2px 0 8px;}' +
+    '.rv-chip{font-size:12px;padding:6px 11px;border-radius:14px;border:1px solid #c9c9c9;background:#f7f7f7;color:#444;cursor:pointer;}' +
+    '.rv-chip.on{border-color:#d68a00;color:#a15c00;background:#fff6e5;}' +
+    '.rv-chip:disabled{opacity:.45;cursor:default;}' +
+    '.rv-sep{flex:1 0 4px;}' +
+    '.rv-readout{min-height:38px;margin-top:6px;padding:6px 10px;border-radius:6px;background:#fafafa;border:1px solid #e6e6e6;border-left:3px solid #e0a100;font-size:12.5px;line-height:1.55;}' +
+    '.rv-info{font-size:12px;color:#777;}' +
+    '.rv-info.h1{color:#c75b00;}.rv-info.h2{color:#a57c00;}.rv-info.h3{color:#c0392b;}.rv-info.warn{color:#2471a3;}' +
+    '.rv-sub{margin:14px 0 6px;font-size:12.5px;font-weight:600;color:#333;}' +
+    '.rv-sub span{font-weight:400;color:#888;font-size:11px;margin-left:6px;}' +
+    '.rv-table{width:100%;border-collapse:collapse;font-size:12px;}' +
+    '.rv-table th{text-align:left;font-weight:400;color:#888;font-size:11px;padding:4px 6px;border-bottom:1px solid #ddd;}' +
+    '.rv-table td{padding:7px 6px;border-bottom:1px solid #eee;vertical-align:top;}' +
+    '.rv-table td.num{font-family:ui-monospace,Menlo,Consolas,monospace;white-space:nowrap;}' +
+    '.rv-table tr[data-f]{cursor:pointer;}' +
+    '.rv-table tr[data-f]:hover{background:#fafafa;}' +
+    '.rv-note{margin-top:8px;font-size:11px;line-height:1.5;color:#888;}';
+  document.head.appendChild(css);
+
+  Chart.register({
+    id: 'rvCursor',
+    afterDraw: function(chart){
+      var cfg = chart.options.plugins && chart.options.plugins.rvCursor;
+      if(!cfg || cfg.x == null) return;
+      var xs = chart.scales.x, ys = chart.scales.y;
+      if(cfg.x < xs.min || cfg.x > xs.max) return;
+      var ctx = chart.ctx, a = chart.chartArea;
+      var x = xs.getPixelForValue(cfg.x);
+      ctx.save();
+      ctx.strokeStyle = '#e0a100'; ctx.lineWidth = 1.3;
+      ctx.beginPath(); ctx.moveTo(x, a.top); ctx.lineTo(x, a.bottom); ctx.stroke();
+      if(cfg.y != null){
+        var y = Math.max(a.top, Math.min(a.bottom, ys.getPixelForValue(cfg.y)));
+        ctx.fillStyle = '#e0a100'; ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI*2); ctx.fill();
+      }
+      ctx.restore();
+    }
+  });
+})();
+
+var RV_F_LOW = 10;
+
+function rvOrderInfo(f, f1, binHz){
+  if(!f1) return { order:null, text:'RPM kayıtlı değil', cls:'' };
+  var r = f / f1;
+  var n = Math.max(1, Math.round(r));
+  var tolHz = Math.max(binHz, 0.02 * n * f1);
+  if(Math.abs(f - n*f1) <= tolHz){
+    if(n === 1) return { order:r, text:'1× devir — dengesizlik belirtisi', cls:'h1' };
+    if(n === 2) return { order:r, text:'2× devir — hizalama bozukluğu belirtisi', cls:'h2' };
+    if(n <= 10) return { order:r, text:n+'× devir — mekanik gevşeklik belirtisi', cls:'h3' };
+    return { order:r, text:n+'× devir', cls:'' };
+  }
+  if(r < 0.9) return { order:r, text:'Devir altı — kayış / sürtünme olabilir', cls:'warn' };
+  return { order:r, text:'Devirle ilişkisiz (rulman/elektriksel olabilir)', cls:'' };
+}
+
+function rvNearest(pts, f){
+  if(!pts || !pts.length) return null;
+  var lo = 0, hi = pts.length - 1;
+  while(hi - lo > 1){ var m = (lo + hi) >> 1; if(pts[m].x < f) lo = m; else hi = m; }
+  return Math.abs(pts[lo].x - f) <= Math.abs(pts[hi].x - f) ? lo : hi;
+}
+
+function rvMarkers(st){
+  if(!st.f1 || !st.showOrders) return [];
+  var out = [];
+  for(var h = 1; h <= 10 && h*st.f1 <= st.baseMax; h++){
+    out.push({ freq: h*st.f1, label: h+'×', color: h===1 ? '#e67e22' : (h===2 ? '#d4a017' : '#9aa39d') });
+  }
+  return out;
+}
+
+function rvSetRange(chart, min, max){
+  var st = chart._rv;
+  min = Math.max(0, min); max = Math.min(st.baseMax, max);
+  if(max - min < 8){ var m = (min + max) / 2; min = m - 4; max = m + 4; }
+  chart.options.scales.x.min = min; chart.options.scales.x.max = max;
+  autoscaleYVisible(chart, min, max);
+  chart.update('none');
+}
+
+function rvSetCursor(chart, f){
+  var st = chart._rv;
+  var ref = chart.data.datasets[0] ? chart.data.datasets[0].data : [];
+  var k = rvNearest(ref, f); if(k == null) return;
+  var span = chart.scales.x.max - chart.scales.x.min;
+  var win = span > 150 ? 3 : 1;
+  var best = k;
+  for(var j = Math.max(0, k-win); j <= Math.min(ref.length-1, k+win); j++){ if(ref[j].y > ref[best].y) best = j; }
+  st.cursorF = ref[best].x;
+  chart.options.plugins.rvCursor = { x: ref[best].x, y: ref[best].y };
+  chart.update('none');
+  rvRenderReadout(chart);
+}
+
+function rvRenderReadout(chart){
+  var st = chart._rv; var el = st.bottom.querySelector('.rv-readout');
+  if(!el) return;
+  if(st.cursorF == null){ el.innerHTML = '<span style="color:#888">Değer okumak için grafiğe dokunun / tıklayın.</span>'; return; }
+  var f = st.cursorF, info = rvOrderInfo(f, st.f1, st.binHz);
+  var multi = chart.data.datasets.length > 1;
+  var vals = chart.data.datasets.map(function(ds){
+    var k = rvNearest(ds.data, f); var y = k == null ? null : ds.data[k].y;
+    var v = '<b>' + (y == null ? '—' : y.toFixed(2)) + ' mm/s</b>';
+    return multi ? '<span style="color:' + ds.borderColor + '">' + (ds.label || '') + ': ' + v + '</span>' : v;
+  }).join(' · ');
+  el.innerHTML = f.toFixed(1) + ' Hz · ' + vals + (info.order != null ? ' · ' + info.order.toFixed(2) + '× devir' : '') +
+    '<div class="rv-info ' + info.cls + '">' + info.text + '</div>';
+}
+
+function rvRenderPeaks(chart){
+  var st = chart._rv; var el = st.bottom.querySelector('.rv-peaks');
+  if(!el) return;
+  var ds = chart.data.datasets[0]; if(!ds){ el.innerHTML = ''; return; }
+  var pts = ds.data, cand = [];
+  for(var k = 1; k < pts.length-1; k++){
+    if(pts[k].x < RV_F_LOW) continue;
+    if(pts[k].y > 0 && pts[k].y >= pts[k-1].y && pts[k].y > pts[k+1].y) cand.push(k);
+  }
+  cand.sort(function(a, b){ return pts[b].y - pts[a].y; });
+  var vmax = cand.length ? pts[cand[0]].y : 0, peaks = [];
+  var minSep = Math.max(3, st.binHz * 1.8);
+  for(var i = 0; i < cand.length; i++){
+    var p = pts[cand[i]];
+    if(p.y < vmax * 0.08) break;
+    if(peaks.some(function(q){ return Math.abs(q.p.x - p.x) < minSep; })) continue;
+    var share = null;
+    if(st.rms && st.binHz <= 1.6){
+      var e = 0;
+      for(var j = Math.max(0, cand[i]-2); j <= Math.min(pts.length-1, cand[i]+2); j++) e += pts[j].y * pts[j].y;
+      share = Math.min(100, e / (st.rms * st.rms) * 100);
+    }
+    peaks.push({ p: p, share: share });
+    if(peaks.length >= 5) break;
+  }
+  if(!peaks.length){ el.innerHTML = ''; return; }
+  var showShare = peaks[0].share != null;
+  var rows = peaks.map(function(o){
+    var info = rvOrderInfo(o.p.x, st.f1, st.binHz);
+    return '<tr data-f="' + o.p.x + '"><td class="num">' + o.p.x.toFixed(1) + '</td><td class="num">' + o.p.y.toFixed(2) + '</td>' +
+      (showShare ? '<td class="num">%' + o.share.toFixed(0) + '</td>' : '') +
+      '<td class="num">' + (info.order != null ? info.order.toFixed(2) + '×' : '—') + '</td>' +
+      '<td class="rv-info ' + info.cls + '">' + info.text + '</td></tr>';
+  }).join('');
+  var who = chart.data.datasets.length > 1 ? ' — <span style="color:' + ds.borderColor + ';margin:0">' + (ds.label || '') + '</span>' : '';
+  el.innerHTML = '<div class="rv-sub">En güçlü 5 tepe' + who + ' <span>satıra dokun → o tepeye git</span></div>' +
+    '<table class="rv-table"><thead><tr><th>Hz</th><th>mm/s</th>' + (showShare ? '<th>Pay</th>' : '') + '<th>Devir</th><th>Yorum</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+    '<div class="rv-note">' + (st.f1 ? 'Devir frekansı: ' + st.f1.toFixed(2) + ' Hz (' + Math.round(st.f1*60) + ' rpm). ' : 'RPM kayıtlı olmadığı için devir yorumu yapılamıyor. ') +
+    (showShare ? '"Pay": tepenin toplam titreşim enerjisindeki yüzdesi.' : (st.binHz > 1.6 ? 'Kayıtlı spektrum ≈' + st.df.toFixed(1) + ' Hz çözünürlükte (kutu ortalaması); tepeler gerçekte olduğundan düşük ve geniş görünür.' : '')) + '</div>';
+  el.querySelectorAll('tr[data-f]').forEach(function(tr){
+    tr.addEventListener('click', function(){
+      var f = parseFloat(tr.getAttribute('data-f'));
+      var half = Math.max(12, f * 0.15);
+      rvSetRange(chart, f - half, f + half);
+      rvSetCursor(chart, f);
+    });
+  });
+}
+
+function rvRenderControls(chart){
+  var st = chart._rv; var el = st.top;
+  if(!el) return;
+  var presets = st.f1
+    ? [['Tümü', 0, st.baseMax], ['0–4× devir', 0, st.f1*4.3], ['0–10× devir', 0, st.f1*10.5]]
+    : [['Tümü', 0, st.baseMax], ['0–100 Hz', 0, 100], ['0–300 Hz', 0, 300]];
+  var html = presets.map(function(p){ return '<button type="button" class="rv-chip" data-min="' + p[1] + '" data-max="' + p[2] + '">' + p[0] + '</button>'; }).join('');
+  html += '<span class="rv-sep"></span><button type="button" class="rv-chip rv-orders' + (st.showOrders && st.f1 ? ' on' : '') + '"' + (st.f1 ? '' : ' disabled') + '>Devir çizgileri</button>';
+  el.innerHTML = html;
+  el.querySelectorAll('.rv-chip[data-min]').forEach(function(b){
+    b.addEventListener('click', function(){ rvSetRange(chart, parseFloat(b.getAttribute('data-min')), parseFloat(b.getAttribute('data-max'))); });
+  });
+  var bo = el.querySelector('.rv-orders');
+  if(bo) bo.addEventListener('click', function(){
+    st.showOrders = !st.showOrders;
+    chart.options.plugins.bearingMarkers = { markers: rvMarkers(st) };
+    chart.update('none'); rvRenderControls(chart);
+  });
+}
+
+// renderAxis() içinden hız grafiği oluşturulduktan sonra çağrılır.
+function rvAttach(chart, canvas, ax, f1, baseMax, rms){
+  var top = document.querySelector('.rv-top[data-ax="' + ax + '"]');
+  var bottom = document.querySelector('.rv-bottom[data-ax="' + ax + '"]');
+  if(!top || !bottom) return;
+  if(!bottom.querySelector('.rv-readout')) bottom.innerHTML = '<div class="rv-readout"></div><div class="rv-peaks"></div>';
+  var ref = chart.data.datasets[0] ? chart.data.datasets[0].data : [];
+  var diffs = [];
+  for(var i = 1; i < ref.length; i++) diffs.push(ref[i].x - ref[i-1].x);
+  diffs.sort(function(a, b){ return a - b; });
+  var df = diffs.length ? diffs[Math.floor(diffs.length/2)] : 1;
+  chart._rv = { f1: f1 || null, baseMax: baseMax, rms: rms || null, binHz: Math.max(1.5, df * 1.1), df: df,
+                cursorF: null, showOrders: true, top: top, bottom: bottom };
+  chart.options.plugins.bearingMarkers = { markers: rvMarkers(chart._rv) };
+  chart.options.plugins.rvCursor = { x: null };
+  chart.options.plugins.tooltip = { enabled: false };
+  chart.options.scales.x.min = 0; chart.options.scales.x.max = baseMax;
+  if(chart.options.scales.x.ticks) chart.options.scales.x.ticks.includeBounds = false;
+  autoscaleYVisible(chart, 0, baseMax);
+  chart.update('none');
+  canvas._rvChart = chart;
+  if(!canvas._rvBound){
+    canvas._rvBound = true;
+    canvas.addEventListener('charttap', function(e){
+      var c = canvas._rvChart; if(!c || !c._rv) return;
+      var rect = canvas.getBoundingClientRect();
+      var px = e.detail.clientX - rect.left;
+      if(px < c.chartArea.left || px > c.chartArea.right) return;
+      rvSetCursor(c, c.scales.x.getValueForPixel(px));
+    });
+  }
+  rvRenderControls(chart);
+  rvRenderReadout(chart);
+  rvRenderPeaks(chart);
+}
+// ---- /Hız spektrumu araçları ----
+
 const TREND = ${JSON.stringify(trend).replace(/</g,'\\u003c')};
 const BEARING_FREQS = ${JSON.stringify(bearing && bearing.freqs ? bearing.freqs : null)};
 const BEARING_COLORS = ${JSON.stringify(BEARING_FAULT_COLORS)};
@@ -2488,6 +2714,7 @@ function renderAxis(ax){
   const velChart = new Chart(velCanvas, { type:'line', data:{datasets: toDatasets(s.vel,false)}, options: chartOptions('Hz','mm/s',false,true) });
   chartRefs[ax].vel = velChart;
   attachZoomPan({current: velChart}, velCanvas, 0, maxOf(s.vel));
+  rvAttach(velChart, velCanvas, ax, REPORT_F1, maxOf(s.vel), null);
 
   const psdCanvas = document.querySelector('canvas.chPsd[data-ax="'+ax+'"]');
   const psdOptions = chartOptions('Hz','G²/Hz',true,true);
@@ -5121,7 +5348,11 @@ async function exportHtmlReport(){
     for(const ax of ['X','Y','Z']){
       const spec = getSpec(ax);
       if(!spec) continue;
-      const vel = exportAxisSeries(spec.velF, spec.velV, 700);
+      // Hız spektrumu sadece 0..VEL_F_HIGH aralığında anlamlı; bu aralık tam çözünürlükte gömülür
+      // (eskiden tüm 0..6400 Hz 700 noktaya indirgendiği için ~10 Hz'lik basamaklar oluşuyordu).
+      const velIdx = [];
+      for(let k=0;k<spec.velF.length;k++){ if(spec.velF[k] <= VEL_F_HIGH) velIdx.push(k); }
+      const vel = exportAxisSeries(velIdx.map(k=>spec.velF[k]), velIdx.map(k=>spec.velV[k]), 1100);
       const psd = exportAxisSeries(spec.psdF, spec.psdV, 700);
       let env = null, envelopeHtml = '';
       const anaCtx = bearingCtx(ax, bearing.rpm, meta.shaftHz || null, meta.rms ? meta.rms[ax] : null);
@@ -5192,8 +5423,10 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
     <div class="axpanel" data-ax="${ax}" style="display:${i===0?'block':'none'}; border:1px solid #ccc; border-radius:0 6px 6px 6px; padding:14px;">
       <div style="margin-bottom:6px; font-size:13px; color:#555;">${ax} ekseni RMS hız: <b>${axesData[ax].rms != null ? axesData[ax].rms.toFixed(2) : '—'} mm/s</b></div>
       <h3 style="font-size:13px; margin:10px 0 6px;">Hız Spektrumu (mm/s)</h3>
+      <div class="rv-top" data-ax="${ax}"></div>
       ${zoomToolbar(ax,'vel')}
       <div style="position:relative; height:240px;"><canvas class="chVel" data-ax="${ax}"></canvas></div>
+      <div class="rv-bottom" data-ax="${ax}"></div>
       <h3 style="font-size:13px; margin:16px 0 6px;">İvme PSD (G²/Hz)</h3>
       ${zoomToolbar(ax,'psd')}
       <div style="position:relative; height:240px;"><canvas class="chPsd" data-ax="${ax}"></canvas></div>
@@ -5264,6 +5497,228 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
 <script>${safeChartJs}<\/script>
 <script>
 const AXES_DATA = ${JSON.stringify(axesData).replace(/</g,'\\u003c')};
+const REPORT_F1 = ${JSON.stringify(meta.shaftHz || (meta.rpm && meta.rpm !== '—' ? parseFloat(meta.rpm)/60 : null) || null)};
+// ---- Hız spektrumu araçları (rapor sürümü): imleç, devir çizgileri, tepe tablosu, hazır aralıklar ----
+(function(){
+  var css = document.createElement('style');
+  css.textContent =
+    '.rv-top{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:2px 0 8px;}' +
+    '.rv-chip{font-size:12px;padding:6px 11px;border-radius:14px;border:1px solid #c9c9c9;background:#f7f7f7;color:#444;cursor:pointer;}' +
+    '.rv-chip.on{border-color:#d68a00;color:#a15c00;background:#fff6e5;}' +
+    '.rv-chip:disabled{opacity:.45;cursor:default;}' +
+    '.rv-sep{flex:1 0 4px;}' +
+    '.rv-readout{min-height:38px;margin-top:6px;padding:6px 10px;border-radius:6px;background:#fafafa;border:1px solid #e6e6e6;border-left:3px solid #e0a100;font-size:12.5px;line-height:1.55;}' +
+    '.rv-info{font-size:12px;color:#777;}' +
+    '.rv-info.h1{color:#c75b00;}.rv-info.h2{color:#a57c00;}.rv-info.h3{color:#c0392b;}.rv-info.warn{color:#2471a3;}' +
+    '.rv-sub{margin:14px 0 6px;font-size:12.5px;font-weight:600;color:#333;}' +
+    '.rv-sub span{font-weight:400;color:#888;font-size:11px;margin-left:6px;}' +
+    '.rv-table{width:100%;border-collapse:collapse;font-size:12px;}' +
+    '.rv-table th{text-align:left;font-weight:400;color:#888;font-size:11px;padding:4px 6px;border-bottom:1px solid #ddd;}' +
+    '.rv-table td{padding:7px 6px;border-bottom:1px solid #eee;vertical-align:top;}' +
+    '.rv-table td.num{font-family:ui-monospace,Menlo,Consolas,monospace;white-space:nowrap;}' +
+    '.rv-table tr[data-f]{cursor:pointer;}' +
+    '.rv-table tr[data-f]:hover{background:#fafafa;}' +
+    '.rv-note{margin-top:8px;font-size:11px;line-height:1.5;color:#888;}';
+  document.head.appendChild(css);
+
+  Chart.register({
+    id: 'rvCursor',
+    afterDraw: function(chart){
+      var cfg = chart.options.plugins && chart.options.plugins.rvCursor;
+      if(!cfg || cfg.x == null) return;
+      var xs = chart.scales.x, ys = chart.scales.y;
+      if(cfg.x < xs.min || cfg.x > xs.max) return;
+      var ctx = chart.ctx, a = chart.chartArea;
+      var x = xs.getPixelForValue(cfg.x);
+      ctx.save();
+      ctx.strokeStyle = '#e0a100'; ctx.lineWidth = 1.3;
+      ctx.beginPath(); ctx.moveTo(x, a.top); ctx.lineTo(x, a.bottom); ctx.stroke();
+      if(cfg.y != null){
+        var y = Math.max(a.top, Math.min(a.bottom, ys.getPixelForValue(cfg.y)));
+        ctx.fillStyle = '#e0a100'; ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI*2); ctx.fill();
+      }
+      ctx.restore();
+    }
+  });
+})();
+
+var RV_F_LOW = 10;
+
+function rvOrderInfo(f, f1, binHz){
+  if(!f1) return { order:null, text:'RPM kayıtlı değil', cls:'' };
+  var r = f / f1;
+  var n = Math.max(1, Math.round(r));
+  var tolHz = Math.max(binHz, 0.02 * n * f1);
+  if(Math.abs(f - n*f1) <= tolHz){
+    if(n === 1) return { order:r, text:'1× devir — dengesizlik belirtisi', cls:'h1' };
+    if(n === 2) return { order:r, text:'2× devir — hizalama bozukluğu belirtisi', cls:'h2' };
+    if(n <= 10) return { order:r, text:n+'× devir — mekanik gevşeklik belirtisi', cls:'h3' };
+    return { order:r, text:n+'× devir', cls:'' };
+  }
+  if(r < 0.9) return { order:r, text:'Devir altı — kayış / sürtünme olabilir', cls:'warn' };
+  return { order:r, text:'Devirle ilişkisiz (rulman/elektriksel olabilir)', cls:'' };
+}
+
+function rvNearest(pts, f){
+  if(!pts || !pts.length) return null;
+  var lo = 0, hi = pts.length - 1;
+  while(hi - lo > 1){ var m = (lo + hi) >> 1; if(pts[m].x < f) lo = m; else hi = m; }
+  return Math.abs(pts[lo].x - f) <= Math.abs(pts[hi].x - f) ? lo : hi;
+}
+
+function rvMarkers(st){
+  if(!st.f1 || !st.showOrders) return [];
+  var out = [];
+  for(var h = 1; h <= 10 && h*st.f1 <= st.baseMax; h++){
+    out.push({ freq: h*st.f1, label: h+'×', color: h===1 ? '#e67e22' : (h===2 ? '#d4a017' : '#9aa39d') });
+  }
+  return out;
+}
+
+function rvSetRange(chart, min, max){
+  var st = chart._rv;
+  min = Math.max(0, min); max = Math.min(st.baseMax, max);
+  if(max - min < 8){ var m = (min + max) / 2; min = m - 4; max = m + 4; }
+  chart.options.scales.x.min = min; chart.options.scales.x.max = max;
+  autoscaleYVisible(chart, min, max);
+  chart.update('none');
+}
+
+function rvSetCursor(chart, f){
+  var st = chart._rv;
+  var ref = chart.data.datasets[0] ? chart.data.datasets[0].data : [];
+  var k = rvNearest(ref, f); if(k == null) return;
+  var span = chart.scales.x.max - chart.scales.x.min;
+  var win = span > 150 ? 3 : 1;
+  var best = k;
+  for(var j = Math.max(0, k-win); j <= Math.min(ref.length-1, k+win); j++){ if(ref[j].y > ref[best].y) best = j; }
+  st.cursorF = ref[best].x;
+  chart.options.plugins.rvCursor = { x: ref[best].x, y: ref[best].y };
+  chart.update('none');
+  rvRenderReadout(chart);
+}
+
+function rvRenderReadout(chart){
+  var st = chart._rv; var el = st.bottom.querySelector('.rv-readout');
+  if(!el) return;
+  if(st.cursorF == null){ el.innerHTML = '<span style="color:#888">Değer okumak için grafiğe dokunun / tıklayın.</span>'; return; }
+  var f = st.cursorF, info = rvOrderInfo(f, st.f1, st.binHz);
+  var multi = chart.data.datasets.length > 1;
+  var vals = chart.data.datasets.map(function(ds){
+    var k = rvNearest(ds.data, f); var y = k == null ? null : ds.data[k].y;
+    var v = '<b>' + (y == null ? '—' : y.toFixed(2)) + ' mm/s</b>';
+    return multi ? '<span style="color:' + ds.borderColor + '">' + (ds.label || '') + ': ' + v + '</span>' : v;
+  }).join(' · ');
+  el.innerHTML = f.toFixed(1) + ' Hz · ' + vals + (info.order != null ? ' · ' + info.order.toFixed(2) + '× devir' : '') +
+    '<div class="rv-info ' + info.cls + '">' + info.text + '</div>';
+}
+
+function rvRenderPeaks(chart){
+  var st = chart._rv; var el = st.bottom.querySelector('.rv-peaks');
+  if(!el) return;
+  var ds = chart.data.datasets[0]; if(!ds){ el.innerHTML = ''; return; }
+  var pts = ds.data, cand = [];
+  for(var k = 1; k < pts.length-1; k++){
+    if(pts[k].x < RV_F_LOW) continue;
+    if(pts[k].y > 0 && pts[k].y >= pts[k-1].y && pts[k].y > pts[k+1].y) cand.push(k);
+  }
+  cand.sort(function(a, b){ return pts[b].y - pts[a].y; });
+  var vmax = cand.length ? pts[cand[0]].y : 0, peaks = [];
+  var minSep = Math.max(3, st.binHz * 1.8);
+  for(var i = 0; i < cand.length; i++){
+    var p = pts[cand[i]];
+    if(p.y < vmax * 0.08) break;
+    if(peaks.some(function(q){ return Math.abs(q.p.x - p.x) < minSep; })) continue;
+    var share = null;
+    if(st.rms && st.binHz <= 1.6){
+      var e = 0;
+      for(var j = Math.max(0, cand[i]-2); j <= Math.min(pts.length-1, cand[i]+2); j++) e += pts[j].y * pts[j].y;
+      share = Math.min(100, e / (st.rms * st.rms) * 100);
+    }
+    peaks.push({ p: p, share: share });
+    if(peaks.length >= 5) break;
+  }
+  if(!peaks.length){ el.innerHTML = ''; return; }
+  var showShare = peaks[0].share != null;
+  var rows = peaks.map(function(o){
+    var info = rvOrderInfo(o.p.x, st.f1, st.binHz);
+    return '<tr data-f="' + o.p.x + '"><td class="num">' + o.p.x.toFixed(1) + '</td><td class="num">' + o.p.y.toFixed(2) + '</td>' +
+      (showShare ? '<td class="num">%' + o.share.toFixed(0) + '</td>' : '') +
+      '<td class="num">' + (info.order != null ? info.order.toFixed(2) + '×' : '—') + '</td>' +
+      '<td class="rv-info ' + info.cls + '">' + info.text + '</td></tr>';
+  }).join('');
+  var who = chart.data.datasets.length > 1 ? ' — <span style="color:' + ds.borderColor + ';margin:0">' + (ds.label || '') + '</span>' : '';
+  el.innerHTML = '<div class="rv-sub">En güçlü 5 tepe' + who + ' <span>satıra dokun → o tepeye git</span></div>' +
+    '<table class="rv-table"><thead><tr><th>Hz</th><th>mm/s</th>' + (showShare ? '<th>Pay</th>' : '') + '<th>Devir</th><th>Yorum</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+    '<div class="rv-note">' + (st.f1 ? 'Devir frekansı: ' + st.f1.toFixed(2) + ' Hz (' + Math.round(st.f1*60) + ' rpm). ' : 'RPM kayıtlı olmadığı için devir yorumu yapılamıyor. ') +
+    (showShare ? '"Pay": tepenin toplam titreşim enerjisindeki yüzdesi.' : (st.binHz > 1.6 ? 'Kayıtlı spektrum ≈' + st.df.toFixed(1) + ' Hz çözünürlükte (kutu ortalaması); tepeler gerçekte olduğundan düşük ve geniş görünür.' : '')) + '</div>';
+  el.querySelectorAll('tr[data-f]').forEach(function(tr){
+    tr.addEventListener('click', function(){
+      var f = parseFloat(tr.getAttribute('data-f'));
+      var half = Math.max(12, f * 0.15);
+      rvSetRange(chart, f - half, f + half);
+      rvSetCursor(chart, f);
+    });
+  });
+}
+
+function rvRenderControls(chart){
+  var st = chart._rv; var el = st.top;
+  if(!el) return;
+  var presets = st.f1
+    ? [['Tümü', 0, st.baseMax], ['0–4× devir', 0, st.f1*4.3], ['0–10× devir', 0, st.f1*10.5]]
+    : [['Tümü', 0, st.baseMax], ['0–100 Hz', 0, 100], ['0–300 Hz', 0, 300]];
+  var html = presets.map(function(p){ return '<button type="button" class="rv-chip" data-min="' + p[1] + '" data-max="' + p[2] + '">' + p[0] + '</button>'; }).join('');
+  html += '<span class="rv-sep"></span><button type="button" class="rv-chip rv-orders' + (st.showOrders && st.f1 ? ' on' : '') + '"' + (st.f1 ? '' : ' disabled') + '>Devir çizgileri</button>';
+  el.innerHTML = html;
+  el.querySelectorAll('.rv-chip[data-min]').forEach(function(b){
+    b.addEventListener('click', function(){ rvSetRange(chart, parseFloat(b.getAttribute('data-min')), parseFloat(b.getAttribute('data-max'))); });
+  });
+  var bo = el.querySelector('.rv-orders');
+  if(bo) bo.addEventListener('click', function(){
+    st.showOrders = !st.showOrders;
+    chart.options.plugins.bearingMarkers = { markers: rvMarkers(st) };
+    chart.update('none'); rvRenderControls(chart);
+  });
+}
+
+// renderAxis() içinden hız grafiği oluşturulduktan sonra çağrılır.
+function rvAttach(chart, canvas, ax, f1, baseMax, rms){
+  var top = document.querySelector('.rv-top[data-ax="' + ax + '"]');
+  var bottom = document.querySelector('.rv-bottom[data-ax="' + ax + '"]');
+  if(!top || !bottom) return;
+  if(!bottom.querySelector('.rv-readout')) bottom.innerHTML = '<div class="rv-readout"></div><div class="rv-peaks"></div>';
+  var ref = chart.data.datasets[0] ? chart.data.datasets[0].data : [];
+  var diffs = [];
+  for(var i = 1; i < ref.length; i++) diffs.push(ref[i].x - ref[i-1].x);
+  diffs.sort(function(a, b){ return a - b; });
+  var df = diffs.length ? diffs[Math.floor(diffs.length/2)] : 1;
+  chart._rv = { f1: f1 || null, baseMax: baseMax, rms: rms || null, binHz: Math.max(1.5, df * 1.1), df: df,
+                cursorF: null, showOrders: true, top: top, bottom: bottom };
+  chart.options.plugins.bearingMarkers = { markers: rvMarkers(chart._rv) };
+  chart.options.plugins.rvCursor = { x: null };
+  chart.options.plugins.tooltip = { enabled: false };
+  chart.options.scales.x.min = 0; chart.options.scales.x.max = baseMax;
+  if(chart.options.scales.x.ticks) chart.options.scales.x.ticks.includeBounds = false;
+  autoscaleYVisible(chart, 0, baseMax);
+  chart.update('none');
+  canvas._rvChart = chart;
+  if(!canvas._rvBound){
+    canvas._rvBound = true;
+    canvas.addEventListener('charttap', function(e){
+      var c = canvas._rvChart; if(!c || !c._rv) return;
+      var rect = canvas.getBoundingClientRect();
+      var px = e.detail.clientX - rect.left;
+      if(px < c.chartArea.left || px > c.chartArea.right) return;
+      rvSetCursor(c, c.scales.x.getValueForPixel(px));
+    });
+  }
+  rvRenderControls(chart);
+  rvRenderReadout(chart);
+  rvRenderPeaks(chart);
+}
+// ---- /Hız spektrumu araçları ----
+
 const BEARING_FREQS = ${JSON.stringify(bearing && bearing.freqs ? bearing.freqs : null)};
 const BEARING_COLORS = ${JSON.stringify(BEARING_FAULT_COLORS)};
 let bmVisible = {};
@@ -5612,6 +6067,7 @@ function renderAxis(ax){
   chartRefs[ax].vel = velChart;
   const velMax = d.vel.f[d.vel.f.length-1] || 1000;
   attachZoomPan({current: velChart}, velCanvas, 0, velMax);
+  rvAttach(velChart, velCanvas, ax, REPORT_F1, velMax, d.rms);
 
   const psdCanvas = document.querySelector('canvas.chPsd[data-ax="'+ax+'"]');
   const psdVSafe = floorLogSeries(d.psd.v);

@@ -561,9 +561,9 @@ const db = firebase.firestore();
     <div class="panel-title">Zarf (Envelope) Spektrumu <span class="tag">erken evre rulman arızası</span> <button class="btn-mini" id="btnResetZoomEnv" type="button">Yakınlaştırmayı sıfırla</button></div>
     <div class="env-band" style="display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
       <label for="envFLow">Demodülasyon bandı (Hz)</label>
-      <input type="number" id="envFLow" value="2600" step="100">
+      <input type="number" id="envFLow" value="1300" step="100">
       <span style="color:var(--text-dim);">–</span>
-      <input type="number" id="envFHigh" value="5500" step="100">
+      <input type="number" id="envFHigh" value="2800" step="100">
       <button class="btn-mini" id="btnEnvRecalc" type="button">Yeniden Hesapla</button>
     </div>
     <div class="vp-controls" id="envBmChips"></div>
@@ -640,7 +640,15 @@ const CHAR_MAP = {
 const CONFIG_BYTES  = new Uint8Array([0,1,4,0,0,50,0,0]);
 const TRIGGER_BYTES = new Uint8Array([1]);
 const SCALE_G_PER_LSB = 0.0006104; // g/bit, uygulamanın kendi server-upload JSON'undan doğrulandı
-const SAMPLE_RATE_HZ = 12800;
+// ÖRNEKLEME HIZI — 09.10.2026'da şebekeye doğrudan bağlı (VFD'siz) 1450 rpm'lik
+// bir motorla ölçüldü: 2× şebeke (100 Hz) ve 6× şebeke (300 Hz) tepeleri ile
+// mil devri (1449 rpm) ancak fs ≈ 6510 Hz'de doğru yere oturuyor (iki ölçüm:
+// 6505 ve 6516 Hz). Eskiden 12800 kabul ediliyordu; bu, tüm frekansları 2 kat
+// yüksek, hız (mm/s) değerlerini ~yarı gösteriyordu. Sensörün nominal değeri
+// büyük ihtimalle 6400 Hz (Able Handy bunu kullanıyor), iç saati ~%1.7 hızlı.
+// Yeni bir WS300 eklenirse: VFD'siz bir motorda 100 Hz tepesinin nerede
+// çıktığına bakıp bu değeri o sensöre göre güncelleyin.
+const SAMPLE_RATE_HZ = 6510;
 
 // ============================================================
 // STATE
@@ -1315,6 +1323,7 @@ async function saveMeasurementToFirestore(){
     rpm: rpmVal,
     isoClass: cls,
     timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+    sampleRate: SAMPLE_RATE_HZ, // bu alan olmayan kayıtlar eski (12800 Hz varsayımlı, frekansları 2 kat hatalı) ölçümlerdir
     velRMS: {},
     isoZone: {},
     velSpectrum: {},
@@ -1813,7 +1822,7 @@ function renderHistoryList(){
         <input type="checkbox" ${checked?'checked':''} ${disabled?'disabled':''} style="flex:none; width:20px; height:20px;">
         <span style="min-width:0;">
           <div style="font-size:13px;">${dateStr}</div>
-          <div style="font-size:11px; color:var(--text-dim);">RPM: ${m.rpm ?? '—'}${zone ? ' · Zone '+zone : ''}</div>
+          <div style="font-size:11px; color:var(--text-dim);">RPM: ${m.rpm ?? '—'}${zone ? ' · Zone '+zone : ''}${m.sampleRate ? '' : ' · <span style="color:#ffb238">⚠ eski ölçek (hatalı)</span>'}</div>
         </span>
       </span>
       <span style="font-family:'JetBrains Mono',monospace; flex:none;">${rms!=null ? rms.toFixed(2)+' mm/s' : '—'}</span>`;
@@ -3161,7 +3170,7 @@ function ifft(re, im){
 // ============================================================
 // ZARF (ENVELOPE) SPEKTRUMU — erken evre rulman arızası tespiti
 // Ham ivme sinyalinin yüksek frekanslı bir bandını (rulman rezonans/darbe
-// bölgesi, varsayılan 2600-5500 Hz — sürücülü motorlarda PWM taşıyıcı
+// bölgesi, varsayılan 1300-2800 Hz — sürücülü motorlarda PWM taşıyıcı
 // kümesinin üstünde kalacak şekilde seçildi) demodüle eder. BPFO/BPFI gibi
 // periyodik darbeler ham PSD'de rezonansın içine gömülü kalıp görünmezken,
 // zarf spektrumunda düşük frekans bölgesinde (0-500 Hz) net pikler olarak
@@ -3356,7 +3365,9 @@ const VEL_F_LOW = 10, VEL_F_HIGH = 1000; // ISO 10816 pratiği
 // bu varsayılan bantla hesaplanıp Firestore'a küçük, downsample edilmiş bir zarf
 // spektrumu olarak yazılır — böylece ham örnekler (axisSamples) saklanmasa bile
 // geçmiş bir ölçümün PDF raporunda zarf grafiği + otomatik yorum gösterilebilir.
-const ENV_DEFAULT_F_LOW = 2600, ENV_DEFAULT_F_HIGH = 5500;
+// Örnekleme hızı düzeltmesinden önce ekranda 2600-5500 yazan bant, gerçekte 1300-2800 Hz'di;
+// aynı fiziksel bant korunuyor (Nyquist ~3255 Hz).
+const ENV_DEFAULT_F_LOW = 1300, ENV_DEFAULT_F_HIGH = 2800;
 const ENV_SPEC_F_MAX = 500;
 let axisSpectra = { X:null, Y:null, Z:null }; // {freqs, psd, velAmp, rmsVelocity} - eksen başına cache
 let lastHistoricalDoc = null; // seçili nokta için Firestore'daki en güncel ölçüm (canlı ölçüm yoksa PDF Rapor bunu kullanır)
@@ -4053,8 +4064,8 @@ function showDetail(ax){
   function computeAndRenderEnvelope(){
     const samples = axisSamples[ax];
     if(!samples){ return; }
-    const fLow = parseFloat(document.getElementById('envFLow').value) || 2600;
-    const fHigh = parseFloat(document.getElementById('envFHigh').value) || 5500;
+    const fLow = parseFloat(document.getElementById('envFLow').value) || ENV_DEFAULT_F_LOW;
+    const fHigh = parseFloat(document.getElementById('envFHigh').value) || ENV_DEFAULT_F_HIGH;
     const {freqs: efreqs, amp: eamp} = envelopeSpectrum(samples, SAMPLE_RATE_HZ, fLow, fHigh);
     const envPts = [];
     for(let k=0;k<efreqs.length && efreqs[k]<=ENV_F_MAX;k++){ if(efreqs[k] >= ENV_MIN_HZ) envPts.push({x:efreqs[k], y:eamp[k]}); }
@@ -4818,7 +4829,7 @@ function buildEnvelopeAnalysisHtml(envPts, bFreqs, fLow, fHigh, ctx){
   if(!bFreqs) return bandTxt + '<div style="color:var(--text-dim)">Rulman kodu/RPM girilmemiş — zarf üzerinde rulman frekansı değerlendirmesi yapılamıyor.</div>';
   const res = analyzeBearing(null, null, envPts, bFreqs, ctx);
   return _singleSourceBlock(res, 'env', true, bandTxt) +
-    `<div style="font-size:11px; color:var(--text-dim); margin-top:8px;">Sürücülü (VFD) motorlarda PWM anahtarlama frekansı ve yan bantları da bu bölgede tepe oluşturabilir; demodülasyon bandını bu kümenin dışına ayarlamak (örn. varsayılan 2600-5500 Hz) yanlış eşleşmeyi azaltır.</div>`;
+    `<div style="font-size:11px; color:var(--text-dim); margin-top:8px;">Sürücülü (VFD) motorlarda PWM anahtarlama frekansı ve yan bantları da bu bölgede tepe oluşturabilir; demodülasyon bandını bu kümenin dışına ayarlamak (örn. varsayılan 1300-2800 Hz) yanlış eşleşmeyi azaltır.</div>`;
 }
 function buildEnvelopeAnalysisPrintHtml(envPts, bFreqs, fLow, fHigh, ctx){
   const bandTxt = `<div style="font-size:11px; color:#777; margin-bottom:6px;">Demodülasyon bandı: ${fLow.toFixed(0)}–${fHigh.toFixed(0)} Hz · Zarf ${ENV_MIN_HZ}–${ENV_SPEC_F_MAX} Hz</div>`;

@@ -640,15 +640,21 @@ const CHAR_MAP = {
 const CONFIG_BYTES  = new Uint8Array([0,1,4,0,0,50,0,0]);
 const TRIGGER_BYTES = new Uint8Array([1]);
 const SCALE_G_PER_LSB = 0.0006104; // g/bit, uygulamanın kendi server-upload JSON'undan doğrulandı
-// ÖRNEKLEME HIZI — 09.10.2026'da şebekeye doğrudan bağlı (VFD'siz) 1450 rpm'lik
-// bir motorla ölçüldü: 2× şebeke (100 Hz) ve 6× şebeke (300 Hz) tepeleri ile
-// mil devri (1449 rpm) ancak fs ≈ 6510 Hz'de doğru yere oturuyor (iki ölçüm:
-// 6505 ve 6516 Hz). Eskiden 12800 kabul ediliyordu; bu, tüm frekansları 2 kat
-// yüksek, hız (mm/s) değerlerini ~yarı gösteriyordu. Sensörün nominal değeri
-// büyük ihtimalle 6400 Hz (Able Handy bunu kullanıyor), iç saati ~%1.7 hızlı.
-// Yeni bir WS300 eklenirse: VFD'siz bir motorda 100 Hz tepesinin nerede
-// çıktığına bakıp bu değeri o sensöre göre güncelleyin.
-const SAMPLE_RATE_HZ = 6510;
+// ÖRNEKLEME HIZI — sensör gerçek örnekleme hızını kendisi bildiriyor: config
+// karakteristiği (90829501) okunduğunda dönen cevabın 14-15. baytları (uint16 LE)
+// Hz cinsinden örnekleme hızıdır (ör. "...70 19 c4 09" → 0x1970 = 6512 Hz).
+// Able Handy de bağlanırken bu karakteristiği okuyor. Değer 09.10.2026'da
+// şebekeye doğrudan bağlı bir motorla bağımsız olarak doğrulandı: 2× ve 6× şebeke
+// (100/300 Hz) tepeleri fs ≈ 6505–6516 Hz'de doğru yere oturuyor.
+// Eskiden 12800 kabul ediliyordu; bu, tüm frekansları 2 kat yüksek, hız (mm/s)
+// değerlerini ~yarı gösteriyordu. Okuma başarısız olursa varsayılan kullanılır.
+const SAMPLE_RATE_DEFAULT_HZ = 6510;
+let SAMPLE_RATE_HZ = SAMPLE_RATE_DEFAULT_HZ;
+function parseSensorSampleRate(dataView){
+  if(!dataView || dataView.byteLength < 16) return null;
+  const fs = dataView.getUint16(14, true);
+  return (fs >= 3000 && fs <= 20000) ? fs : null;
+}
 
 // ============================================================
 // STATE
@@ -2982,6 +2988,16 @@ async function runMeasurement(){
     const configChar = await configSvc.getCharacteristic(CHR_CONFIG);
     await writeCharacteristic(configChar, CONFIG_BYTES);
     log('Config yazıldı: ' + bytesToHex(CONFIG_BYTES));
+    // Sensörün bildirdiği gerçek örnekleme hızını oku (bkz. SAMPLE_RATE_HZ açıklaması).
+    try{
+      const cfgVal = await configChar.readValue();
+      const fsRead = parseSensorSampleRate(cfgVal);
+      if(fsRead){ SAMPLE_RATE_HZ = fsRead; log('Sensör örnekleme hızı: ' + fsRead + ' Hz'); }
+      else { SAMPLE_RATE_HZ = SAMPLE_RATE_DEFAULT_HZ; log('Örnekleme hızı okunamadı, varsayılan ' + SAMPLE_RATE_DEFAULT_HZ + ' Hz kullanılıyor (cevap: ' + bytesToHex(new Uint8Array(cfgVal.buffer)) + ')', 'warn'); }
+    }catch(err){
+      SAMPLE_RATE_HZ = SAMPLE_RATE_DEFAULT_HZ;
+      log('Örnekleme hızı okunamadı (' + err.message + '), varsayılan ' + SAMPLE_RATE_DEFAULT_HZ + ' Hz kullanılıyor.', 'warn');
+    }
 
     setStatus('Bildirimler açılıyor…', 'busy');
     const dataSvc = await server.getPrimaryService(SVC_DATA);

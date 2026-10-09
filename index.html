@@ -494,6 +494,7 @@ const db = firebase.firestore();
 
 <div id="mainView">
   <div class="hint" id="axisHint">Spektrum için eksene dokunun →</div>
+  <div id="screenNote" style="display:none; margin:10px 18px 0; padding:10px 12px; border-radius:8px; font-size:12.5px; line-height:1.55;"></div>
   <div class="readouts">
     <div class="axis-card x" data-axis="X">
       <div class="axis-label">X EKSENİ</div>
@@ -827,7 +828,7 @@ async function renderSelectView(){
     // Sıralama sadece GÖRÜNÜME ait — onUp/onDown hâlâ orijinal `docs`
     // dizisindeki (Firestore 'order' alanına karşılık gelen) index'i
     // kullanıyor, bu yüzden elle sıralama her zaman doğru çalışmaya devam eder.
-    const TAG_RANK = {D:0, C:1, worsening:2, stale:3};
+    const TAG_RANK = {D:0, C:1, worsening:2, near:3, stale:4};
     const rows = docs.map((d,i)=>{
       const t = {id:d.id, ...d.data()};
       const tagResults = alertScanResults.filter(r=>r.unit.id===selUnit.id && r.tag.id===t.id);
@@ -836,6 +837,7 @@ async function renderSelectView(){
       if(s.worst==='D') rank = TAG_RANK.D;
       else if(s.worst==='C') rank = TAG_RANK.C;
       else if(s.worseningCount) rank = TAG_RANK.worsening;
+      else if(s.nearCount) rank = TAG_RANK.near;
       else if(s.staleCount) rank = TAG_RANK.stale;
       return {t, i, s, rank};
     });
@@ -845,7 +847,7 @@ async function renderSelectView(){
     // kafa karıştırır (basınca görünümde hiçbir şey değişmeyebilir), bu
     // yüzden sorun varken gizleniyor. Hiç sorun yoksa sıralama zaten orijinal
     // sırayla aynı olduğundan oklar normal şekilde çalışmaya devam eder.
-    const anyProblem = rows.some(r=>r.rank < 4);
+    const anyProblem = rows.some(r=>r.rank < 5);
     if(anyProblem){
       list.insertAdjacentHTML('beforeend', '<div style="font-size:11px; color:var(--text-dim); margin:0 0 8px;">Sorunlu tag\'lar en üstte — elle sıralama (↑/↓) sorunlar giderilince tekrar görünür.</div>');
     }
@@ -1071,7 +1073,11 @@ async function syncLastMeasAfterDelete(unitId, tagId, point){
       return ta - tb;
     });
     const latest = docs[docs.length-1].data();
-    const summary = { timestamp: latest.timestamp || null, velRMS: latest.velRMS || {}, isoZone: latest.isoZone || {}, rpm: latest.rpm || null };
+    const recent = docs.slice(-RECENT_KEEP).map(d=>({ velRMS: d.data().velRMS || {} }));
+    const prevD = docs.length >= 2 ? docs[docs.length-2].data() : null;
+    const summary = { timestamp: latest.timestamp || null, velRMS: latest.velRMS || {}, isoZone: latest.isoZone || {}, rpm: latest.rpm || null,
+                      prevVelRMS: prevD ? (prevD.velRMS || null) : null, prevIsoZone: prevD ? (prevD.isoZone || null) : null, recent,
+                      count: docs.length, baseline: baselineFromDocs(docs) };
     await tagsCol(unitId).doc(tagId).update({ [fieldPath]: summary });
   }catch(err){
     log('Uyarı özeti güncellenemedi: ' + err.message, 'warn');
@@ -1263,6 +1269,7 @@ async function choosePoint(point){
   document.getElementById('selectView').style.display = 'none';
   document.getElementById('statusView').style.display = 'block';
   showMain();
+  { const sn = document.getElementById('screenNote'); if(sn){ sn.style.display='none'; sn.innerHTML=''; } }
   document.getElementById('velX').textContent = '—';
   document.getElementById('velY').textContent = '—';
   document.getElementById('velZ').textContent = '—';
@@ -1367,6 +1374,17 @@ async function saveMeasurementToFirestore(){
     // sayede bir sonraki tarama, trend karşılaştırmasını ek sorgu olmadan
     // yapabiliyor. İlk ölçümde (henüz eski özet yokken) bu alanlar boş kalır.
     const prevSummary = selTag.lastMeas && selTag.lastMeas[selPoint];
+    // Taban değer için son RECENT_KEEP ölçümün küçük özeti (eskiden yeniye).
+    const prevRecentAll = recentFromSummary(prevSummary).map(r=>({velRMS:r.velRMS||{}}));
+    const newRecent = prevRecentAll.concat([{velRMS: doc.velRMS}]).slice(-RECENT_KEEP);
+    // Sabit taban: noktanın ilk BASELINE_COUNT ölçümü tamamlandığında bir kez belirlenir, sonra değişmez.
+    let newBaseline = prevSummary && prevSummary.baseline ? prevSummary.baseline : null;
+    const seenCount = ((prevSummary && prevSummary.count) || prevRecentAll.length) + 1;
+    if(!newBaseline && seenCount >= BASELINE_COUNT && newRecent.length >= BASELINE_COUNT){
+      const first = newRecent.slice(-seenCount).slice(0, BASELINE_COUNT);
+      newBaseline = {};
+      ['X','Y','Z'].forEach(ax=>{ newBaseline[ax] = medianOfNums(first.map(r=>r.velRMS[ax])); });
+    }
     await tagsCol(selUnit.id).doc(selTag.id).set({
       lastMeas: {
         [selPoint]: {
@@ -1375,15 +1393,19 @@ async function saveMeasurementToFirestore(){
           isoZone: doc.isoZone,
           rpm: rpmVal,
           prevVelRMS: prevSummary ? (prevSummary.velRMS || null) : null,
-          prevIsoZone: prevSummary ? (prevSummary.isoZone || null) : null
+          prevIsoZone: prevSummary ? (prevSummary.isoZone || null) : null,
+          recent: newRecent,
+          baseline: newBaseline,
+          count: seenCount
         }
       }
     }, {merge:true});
     // selTag'i de güncel tut — aynı ekranda art arda ölçüm alınırsa bir
     // sonraki save'in prevSummary'si doğru (bir önceki, bayat değil) olsun.
     selTag.lastMeas = selTag.lastMeas || {};
-    selTag.lastMeas[selPoint] = { timestamp:null, velRMS:doc.velRMS, isoZone:doc.isoZone, rpm:rpmVal, prevVelRMS: prevSummary?(prevSummary.velRMS||null):null, prevIsoZone: prevSummary?(prevSummary.isoZone||null):null };
+    selTag.lastMeas[selPoint] = { timestamp:null, velRMS:doc.velRMS, isoZone:doc.isoZone, rpm:rpmVal, prevVelRMS: prevSummary?(prevSummary.velRMS||null):null, prevIsoZone: prevSummary?(prevSummary.isoZone||null):null, recent: newRecent, baseline: newBaseline, count: seenCount };
     await loadTrend();
+    renderScreeningNote();
     refreshAlertBadge(); // arka planda, sonucu beklemeden — buton sayısını günceller
   }catch(err){
     log('Firestore kayıt hatası: ' + err.message, 'err');
@@ -1412,7 +1434,86 @@ let alertScanResults = [];
 // öncekine göre belirgin biçimde (bu oranın üstünde) arttıysa "kötüleşen"
 // sayılır — zone C/D'ye henüz girmemiş olsa bile erken uyarı niteliğinde.
 const ZONE_RANK = {A:0, B:1, C:2, D:3};
-const WORSEN_RMS_RATIO = 1.2; // %20+ artış
+// TARAMA EŞİKLERİ (09.10.2026) — araç bir tarama aracı: şüphede işaretlemeyi tercih eder,
+// ama aynı noktada ardışık ölçümler arasındaki doğal %30-50 oynamayı alarm saymaz.
+const NEAR_LIMIT_RATIO = 0.8;       // Zone B'de, B/C sınırının %80'ine ulaşınca "sınıra yakın"
+const WORSEN_BASELINE_RATIO = 1.5;  // son ölçüm, önceki ölçümlerin ortancasının 1.5 katı → "kötüleşen"
+const RECENT_KEEP = 5;              // kayan taban için saklanan son ölçüm sayısı (bu dahil)
+const BASELINE_COUNT = 3;           // sabit taban: noktanın ilk 3 ölçümünün ortancası (yavaş bozulmayı yakalamak için)
+
+function baselineFromDocs(docsAsc){
+  if(!docsAsc || docsAsc.length < BASELINE_COUNT) return null;
+  const first = docsAsc.slice(0, BASELINE_COUNT).map(d=>d.data().velRMS || {});
+  const b = {}; ['X','Y','Z'].forEach(ax=>{ b[ax] = medianOfNums(first.map(v=>v[ax])); });
+  return b;
+}
+function medianOfNums(arr){
+  const a = arr.filter(v=>v!=null && isFinite(v)).sort((x,y)=>x-y);
+  if(!a.length) return null;
+  const m = Math.floor(a.length/2);
+  return a.length % 2 ? a[m] : (a[m-1]+a[m])/2;
+}
+function zoneForValue(v, cls){
+  const r = (v != null && cls) ? isoEvaluate(v, cls) : null;
+  return r ? r.zone : null;
+}
+// Bir noktanın son ölçümlerinden (eskiden yeniye, sonuncusu en güncel) eksen
+// başına tarama sonucu üretir. Uyarılar ekranı ve canlı ölçüm ekranı aynı
+// kuralı kullansın diye ortak. recent: [{velRMS:{X,Y,Z}}, ...]
+//  zone      : son ölçüm Zone C/D (teyit: bir önceki ölçüm de C/D)
+//  near      : Zone B ve B/C sınırının %80'i üstü (teyit: bir önceki de öyle)
+//  worsening : son ölçüm, (a) önceki son ölçümlerin ortancasının (ani sıçrama) ya da
+//              (b) noktanın sabit tabanının (ilk 3 ölçümün ortancası — yavaş bozulma)
+//              ≥1.5 katı (teyit: bir önceki ölçüm de aynı koşulu sağlıyor).
+//              Bölge sınırı geçişleri burada sayılmaz; onları zone/near yakalar.
+// baseline: {X,Y,Z} sabit taban (yoksa sadece kayan taban kullanılır)
+function evaluatePointAxes(recent, cls, baseline){
+  const out = {};
+  if(!recent || !recent.length) return out;
+  const val = (i, ax)=> (recent[i] && recent[i].velRMS) ? recent[i].velRMS[ax] : null;
+  const n = recent.length;
+  const lim = cls && ISO_ZONES[cls] ? ISO_ZONES[cls] : null;
+  const worseAt = (i, ax)=>{
+    const cur = val(i, ax); if(cur == null || i < 0) return null;
+    const prior = []; for(let k=0;k<i;k++) prior.push(val(k, ax));
+    const cands = [];
+    const rb = medianOfNums(prior); if(rb != null && rb > 0) cands.push({ base: rb, kind: 'recent' });
+    const fb = baseline ? baseline[ax] : null; if(fb != null && fb > 0) cands.push({ base: fb, kind: 'baseline' });
+    if(!cands.length) return null;
+    // en yüksek oranı veren taban esas alınır
+    let best = null;
+    cands.forEach(c=>{ const ratio = cur / c.base; if(!best || ratio > best.ratio) best = { ratio, base: c.base, kind: c.kind }; });
+    return { hit: best.ratio >= WORSEN_BASELINE_RATIO, ratio: best.ratio, base: best.base, kind: best.kind };
+  };
+  ['X','Y','Z'].forEach(ax=>{
+    const cur = val(n-1, ax); if(cur == null) return;
+    const prev = n >= 2 ? val(n-2, ax) : null;
+    const zone = zoneForValue(cur, cls);
+    const prevZone = zoneForValue(prev, cls);
+    const r = { value: cur, zone };
+    if(zone === 'C' || zone === 'D'){
+      r.zoneAlert = { confirmed: prevZone === 'C' || prevZone === 'D' };
+    } else if(lim && zone === 'B' && cur >= lim[1]*NEAR_LIMIT_RATIO){
+      r.near = { limit: lim[1], confirmed: prev != null && prev >= lim[1]*NEAR_LIMIT_RATIO };
+    }
+    const w = worseAt(n-1, ax);
+    if(w && w.hit){
+      const wp = worseAt(n-2, ax);
+      r.worsening = { ratio: w.ratio, base: w.base, kind: w.kind, confirmed: !!(wp && wp.hit) };
+    }
+    out[ax] = r;
+  });
+  return out;
+}
+// Eski özetlerde "recent" yok — prevVelRMS/velRMS'ten en iyi tahmini kur.
+function recentFromSummary(summary){
+  if(!summary) return [];
+  if(Array.isArray(summary.recent) && summary.recent.length) return summary.recent;
+  const arr = [];
+  if(summary.prevVelRMS) arr.push({ velRMS: summary.prevVelRMS });
+  if(summary.velRMS) arr.push({ velRMS: summary.velRMS });
+  return arr;
+}
 
 
 
@@ -1426,7 +1527,11 @@ async function backfillLastMeas(unitId, tagId, point){
       return ta - tb;
     });
     const latest = docs[docs.length-1].data();
-    const summary = { timestamp: latest.timestamp || null, velRMS: latest.velRMS || {}, isoZone: latest.isoZone || {}, rpm: latest.rpm || null };
+    const recent = docs.slice(-RECENT_KEEP).map(d=>({ velRMS: d.data().velRMS || {} }));
+    const prevD = docs.length >= 2 ? docs[docs.length-2].data() : null;
+    const summary = { timestamp: latest.timestamp || null, velRMS: latest.velRMS || {}, isoZone: latest.isoZone || {}, rpm: latest.rpm || null,
+                      prevVelRMS: prevD ? (prevD.velRMS || null) : null, prevIsoZone: prevD ? (prevD.isoZone || null) : null, recent,
+                      count: docs.length, baseline: baselineFromDocs(docs) };
     tagsCol(unitId).doc(tagId).set({ lastMeas: { [point]: summary } }, {merge:true}).catch(()=>{});
     return summary;
   }catch(err){
@@ -1455,30 +1560,14 @@ async function scanAlerts(){
         if(daysSince === null || daysSince >= STALE_DAYS){
           results.push({unit, tag, point, pointLabel, kind:'stale', daysSince, ts});
         }
-        if(summary.isoZone){
-          ['X','Y','Z'].forEach(ax=>{
-            const zone = summary.isoZone[ax];
-            if(zone === 'C' || zone === 'D'){
-              results.push({unit, tag, point, pointLabel, kind:'zone', zone, ax, velRMS: summary.velRMS ? summary.velRMS[ax] : null, ts});
-            }
-          });
-        }
-        if(summary.prevVelRMS || summary.prevIsoZone){
-          ['X','Y','Z'].forEach(ax=>{
-            const curRms = summary.velRMS ? summary.velRMS[ax] : null;
-            const prevRms = summary.prevVelRMS ? summary.prevVelRMS[ax] : null;
-            if(curRms == null || prevRms == null) return;
-            const curZone = summary.isoZone ? summary.isoZone[ax] : null;
-            const prevZone = summary.prevIsoZone ? summary.prevIsoZone[ax] : null;
-            const rc = curZone!=null ? ZONE_RANK[curZone] : null;
-            const rp = prevZone!=null ? ZONE_RANK[prevZone] : null;
-            const zoneWorsened = rc!=null && rp!=null && rc > rp;
-            const rmsWorsened = prevRms > 0 && curRms >= prevRms * WORSEN_RMS_RATIO;
-            if(zoneWorsened || rmsWorsened){
-              results.push({unit, tag, point, pointLabel, kind:'worsening', ax, zone:curZone, prevZone, velRMS:curRms, prevVelRMS:prevRms, zoneWorsened, ts});
-            }
-          });
-        }
+        const cls = isoClass(tag.kw, tag.foundation);
+        const ev = evaluatePointAxes(recentFromSummary(summary), cls, summary.baseline || null);
+        Object.keys(ev).forEach(ax=>{
+          const e = ev[ax];
+          if(e.zoneAlert) results.push({unit, tag, point, pointLabel, kind:'zone', zone:e.zone, ax, velRMS:e.value, confirmed:e.zoneAlert.confirmed, ts});
+          else if(e.near) results.push({unit, tag, point, pointLabel, kind:'near', zone:e.zone, ax, velRMS:e.value, limit:e.near.limit, confirmed:e.near.confirmed, ts});
+          if(e.worsening) results.push({unit, tag, point, pointLabel, kind:'worsening', ax, zone:e.zone, velRMS:e.value, baseRMS:e.worsening.base, ratio:e.worsening.ratio, baseKind:e.worsening.kind, confirmed:e.worsening.confirmed, ts});
+        });
       }
     }
   }
@@ -1490,7 +1579,7 @@ async function scanAlerts(){
   // bu yüzden 50 motora çıkınca da maliyeti düşük kalır.
   const verified = [];
   for(const r of results){
-    if(r.kind === 'zone' || r.kind === 'worsening'){
+    if(r.kind === 'zone' || r.kind === 'worsening' || r.kind === 'near'){
       const check = await measCol(r.unit.id, r.tag.id).where('point','==',r.point).limit(1).get();
       if(check.empty){
         syncLastMeasAfterDelete(r.unit.id, r.tag.id, r.point); // arka planda kendini onarsın, sonucu beklenmiyor
@@ -1500,7 +1589,7 @@ async function scanAlerts(){
     verified.push(r);
   }
   // En kötüsü en üstte: önce Zone D, sonra Zone C, sonra kötüleşen, sonra en uzun süredir ölçülmeyenler.
-  const rank = {D:0, C:1, worsening:2, stale:3, none:4};
+  const rank = {D:0, C:1, worsening:2, near:3, stale:4, none:5};
   verified.sort((a,b)=>{
     const ra = a.kind==='zone' ? rank[a.zone] : rank[a.kind];
     const rb = b.kind==='zone' ? rank[b.zone] : rank[b.kind];
@@ -1518,6 +1607,8 @@ async function scanAlerts(){
 function summarizeAlerts(results){
   const zonePoints = new Set();
   const worseningPoints = new Set();
+  const nearPoints = new Set();
+  const unconfirmedPoints = new Set();
   let worst = null; // 'D' | 'C' | null — rozetin rengini belirler
   let staleOrNoneCount = 0;
   results.forEach(r=>{
@@ -1527,11 +1618,14 @@ function summarizeAlerts(results){
       else if(r.zone === 'C' && worst !== 'D') worst = 'C';
     } else if(r.kind === 'worsening'){
       worseningPoints.add(r.unit.id+'|'+r.tag.id+'|'+r.point);
+    } else if(r.kind === 'near'){
+      nearPoints.add(r.unit.id+'|'+r.tag.id+'|'+r.point);
     } else {
       staleOrNoneCount++;
     }
   });
-  return { zoneCount: zonePoints.size, worseningCount: worseningPoints.size, staleCount: staleOrNoneCount, worst };
+  results.forEach(r=>{ if((r.kind==='zone'||r.kind==='worsening'||r.kind==='near') && !r.confirmed) unconfirmedPoints.add(r.unit.id+'|'+r.tag.id+'|'+r.point); });
+  return { zoneCount: zonePoints.size, worseningCount: worseningPoints.size, nearCount: nearPoints.size, unconfirmedCount: unconfirmedPoints.size, staleCount: staleOrNoneCount, worst };
 }
 
 // Ana sayfadaki ünite satırının altına tek satır özet metni üretir.
@@ -1540,7 +1634,9 @@ function formatAlertSummaryText(s){
   const parts = [];
   if(s.zoneCount) parts.push(s.zoneCount + ' Zone C/D');
   if(s.worseningCount) parts.push(s.worseningCount + ' kötüleşen');
+  if(s.nearCount) parts.push(s.nearCount + ' sınıra yakın');
   if(s.staleCount) parts.push(s.staleCount + ' gecikmiş');
+  if(s.unconfirmedCount) parts.push(s.unconfirmedCount + ' nokta teyit için tekrar ölçülmeli');
   return parts.length ? '⚠ ' + parts.join(' · ') : '';
 }
 // Özete göre satırın rengini belirler: Zone D varsa kırmızı, Zone C veya
@@ -1550,10 +1646,10 @@ function applyAlertRowStyle(rowEl, s){
   if(!subEl) return;
   let color = '';
   if(s.worst === 'D') color = 'var(--red)';
-  else if(s.worst === 'C' || s.worseningCount) color = 'var(--amber)';
+  else if(s.worst === 'C' || s.worseningCount || s.nearCount) color = 'var(--amber)';
   else if(s.staleCount) color = 'var(--text-dim)';
   subEl.style.color = color;
-  subEl.style.fontWeight = (s.worst || s.worseningCount) ? '700' : '400';
+  subEl.style.fontWeight = (s.worst || s.worseningCount || s.nearCount) ? '700' : '400';
 }
 // Ana sayfa (ünite listesi) zaten ekrandayken (örn. uyarı taraması arka
 // planda bittiğinde) satırları yeniden Firestore'dan çekmeden, sadece DOM
@@ -1575,8 +1671,8 @@ async function refreshAlertBadge(){
     log('Uyarı taraması başarısız: ' + err.message, 'warn');
     return;
   }
-  const {zoneCount, worseningCount, staleCount, worst} = summarizeAlerts(alertScanResults);
-  const total = zoneCount + worseningCount + staleCount;
+  const {zoneCount, worseningCount, nearCount, staleCount, worst} = summarizeAlerts(alertScanResults);
+  const total = zoneCount + worseningCount + nearCount + staleCount;
   const badge = document.getElementById('alertBadge');
   if(total === 0){
     badge.style.display = 'none';
@@ -1586,6 +1682,7 @@ async function refreshAlertBadge(){
     const parts = [];
     if(zoneCount) parts.push(zoneCount + ' sorunlu nokta');
     if(worseningCount) parts.push(worseningCount + ' kötüleşen');
+    if(nearCount) parts.push(nearCount + ' sınıra yakın');
     if(staleCount) parts.push(staleCount + ' güncel değil');
     document.getElementById('alertBadgeText').textContent = '⚠ ' + parts.join(' · ');
     document.getElementById('alertBadgeCount').textContent = total;
@@ -1605,7 +1702,7 @@ async function jumpToAlert(r){
   document.getElementById('alertsView').style.display = 'none';
   selUnit = r.unit;
   selTag = r.tag;
-  if(r.kind === 'zone') historyAxis = r.ax;
+  if(r.kind === 'zone' || r.kind === 'near' || r.kind === 'worsening') historyAxis = r.ax;
   await choosePoint(r.point);
   await showHistoryView();
   if(historyDocsCache.length){
@@ -3519,6 +3616,35 @@ function computeResults(){
   if(!cls){
     log('Bu tag için kW/temel tipi tanımlı değil — ISO 10816 değerlendirmesi yapılamadı. Tag düzenlemesinden ekleyebilirsiniz.', 'warn');
   }
+  renderScreeningNote();
+}
+
+// Canlı ölçümden sonra tarama sonucunu kısa bir notla gösterir; teyit edilmemiş
+// her bulgu için "bu noktayı bir kez daha ölçün" der. Kayıt sonrası da çağrılır.
+function renderScreeningNote(){
+  const el = document.getElementById('screenNote');
+  if(!el) return;
+  const cls = selTag ? isoClass(selTag.kw, selTag.foundation) : null;
+  const items = [];
+  let needRepeat = false, severe = false;
+  ['X','Y','Z'].forEach(ax=>{
+    if(!axisSpectra[ax]) return;
+    const cur = axisSpectra[ax].rmsVelocity;
+    const sm = selTag && selTag.lastMeas && selPoint ? selTag.lastMeas[selPoint] : null;
+    const e = evaluatePointAxes(liveRecentWith(ax, cur), cls, sm ? sm.baseline : null)[ax];
+    if(!e) return;
+    if(e.zoneAlert){ items.push(ax+': Zone '+e.zone+' ('+cur.toFixed(2)+' mm/s)'+(e.zoneAlert.confirmed?' — önceki ölçüm de aynı, teyitli':'')); if(!e.zoneAlert.confirmed) needRepeat = true; severe = true; }
+    else if(e.near){ items.push(ax+': B/C sınırına yakın ('+cur.toFixed(2)+' / '+e.near.limit+' mm/s)'+(e.near.confirmed?' — önceki ölçüm de öyle':'')); if(!e.near.confirmed) needRepeat = true; }
+    if(e.worsening){ items.push(ax+': '+(e.worsening.kind==='baseline'?'ilk ölçümlerdeki taban değere':'son ölçümlerin ortancasına')+' göre '+e.worsening.ratio.toFixed(1)+' kat ('+e.worsening.base.toFixed(2)+' → '+cur.toFixed(2)+' mm/s)'+(e.worsening.confirmed?' — art arda ikinci kez':'')); if(!e.worsening.confirmed) needRepeat = true; severe = true; }
+  });
+  if(!items.length){ el.style.display = 'none'; el.innerHTML = ''; return; }
+  const col = severe ? '#ffb238' : '#5ec8ff';
+  el.style.display = 'block';
+  el.style.border = '1px solid ' + col;
+  el.style.background = col + '18';
+  el.style.color = 'var(--text)';
+  el.innerHTML = '<b style="color:'+col+'">⚠ Tarama bulgusu</b><br>' + items.join('<br>') +
+    (needRepeat ? '<div style="margin-top:6px; color:'+col+';"><b>Teyit için sensörü yerinden oynatmadan bu noktayı bir kez daha ölçün.</b> Tek ölçümlük sapmalar ardışık ölçümlerde doğal olarak %30-50 oynayabilir.</div>' : '');
 }
 
 // Bir eksen için ISO 10816-3'e göre uzun-form analiz metni (HTML) üretir:
@@ -4887,26 +5013,23 @@ function zoneForRms(rms){
   const v = (rms != null && cls) ? isoEvaluate(rms, cls) : null;
   return v ? v.zone : null;
 }
-// Bu ölçüm bir önceki ölçüme göre kötüleşmiş mi? (scanAlerts ile aynı kural: bölge
-// yükselmesi veya RMS ≥ %20 artış.) lastMeas zaten bu ölçümün kendisiyse bir
-// öncekiyle (prevVelRMS/prevIsoZone), değilse (canlı ölçüm) lastMeas ile kıyaslar.
+// Bu ölçüm, noktanın önceki ölçümlerine (taban değer = ortanca) göre kötüleşmiş mi?
+// scanAlerts ile aynı kural (evaluatePointAxes). lastMeas zaten bu ölçümün kendisiyse
+// onu listeden çıkarıp öncekilere göre, değilse (henüz kaydedilmemiş canlı ölçüm)
+// kayıtlı ölçümlerin hepsine göre kıyaslar.
+function liveRecentWith(ax, curRms){
+  if(!selTag || !selTag.lastMeas || !selPoint) return [];
+  let recent = recentFromSummary(selTag.lastMeas[selPoint]).slice();
+  const last = recent.length ? recent[recent.length-1].velRMS : null;
+  if(last && last[ax] != null && Math.abs(last[ax] - curRms) <= Math.max(0.005, last[ax]*0.005)) recent = recent.slice(0, -1);
+  return recent.concat([{ velRMS: {[ax]: curRms} }]);
+}
 function axisWorsening(ax, curRms){
-  if(curRms == null || !selTag || !selTag.lastMeas || !selPoint) return false;
-  const s = selTag.lastMeas[selPoint];
-  if(!s) return false;
-  let refRms = s.velRMS ? s.velRMS[ax] : null;
-  let refZone = s.isoZone ? s.isoZone[ax] : null;
-  if(refRms != null && Math.abs(refRms - curRms) <= Math.max(0.005, refRms*0.005)){
-    refRms = s.prevVelRMS ? s.prevVelRMS[ax] : null;
-    refZone = s.prevIsoZone ? s.prevIsoZone[ax] : null;
-  }
-  if(refRms == null) return false;
-  const curZone = zoneForRms(curRms);
-  const rc = curZone != null ? ZONE_RANK[curZone] : null;
-  const rp = refZone != null ? ZONE_RANK[refZone] : null;
-  const zoneWorsened = rc != null && rp != null && rc > rp;
-  const rmsWorsened = refRms > 0 && curRms >= refRms * WORSEN_RMS_RATIO;
-  return zoneWorsened || rmsWorsened;
+  if(curRms == null) return false;
+  const cls = selTag ? isoClass(selTag.kw, selTag.foundation) : null;
+  const s = selTag && selTag.lastMeas && selPoint ? selTag.lastMeas[selPoint] : null;
+  const e = evaluatePointAxes(liveRecentWith(ax, curRms), cls, s ? s.baseline : null)[ax];
+  return !!(e && e.worsening);
 }
 // Canlı ölçümde (tam çözünürlüklü hız spektrumundan) ölçülen mil frekansı.
 function liveShaftHz(rpm){

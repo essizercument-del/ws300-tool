@@ -1822,7 +1822,7 @@ function downsampleSpectrum(freqs, values, targetPoints, fLow, fHigh, mode){
   return {f, v};
 }
 
-async function saveMeasurementToFirestore(){
+async function saveMeasurementToFirestore(qualityIssues){
   if(!selUnit || !selTag || !selPoint) return;
   const rpmVal = parseFloat(document.getElementById('rpmInput').value) || null;
   const cls = isoClass(selTag.kw, selTag.foundation);
@@ -1856,6 +1856,8 @@ async function saveMeasurementToFirestore(){
   }
   const shaftEst = liveShaftHz(rpmVal);
   if(shaftEst) doc.shaftHz = Math.round(shaftEst*100)/100;
+  // Kalite şüpheli olduğu bilinerek kaydedilen ölçümler not alanında işaretlenir.
+  if(qualityIssues && qualityIssues.length) doc.note = 'Kalite uyarısı: ' + qualityIssues.join('; ');
   try{
     const rawBlob = buildRawBlob();
     const ref = await measCol(selUnit.id, selTag.id).add(rawBlob ? Object.assign({}, doc, {_rawBlob: rawBlob}) : doc);
@@ -3658,13 +3660,28 @@ async function runMeasurement(){
 
     setStatus('Veri işleniyor…', 'busy');
     processAxisData();
+    const qualityIssues = assessSignalQuality();
     computeResults();
     document.getElementById('btnExport').disabled = false;
     document.getElementById('btnPdf').disabled = false;
     document.getElementById('btnHtmlReport').disabled = false;
-    setStatus(`Bağlı: ${device.name || 'WS300'} — ölçüm tamam`, 'on');
-    log('Ölçüm tamamlandı.');
-    await saveMeasurementToFirestore();
+    if(qualityIssues.length){
+      qualityIssues.forEach(q=> log('Kalite uyarısı — ' + q, 'err'));
+      setStatus(`Bağlı: ${device.name || 'WS300'} — ölçüm kalitesi şüpheli`, 'err');
+      // Sonuçlar ekranda; kayda girip girmeyeceğine sahada bakan kişi karar versin
+      // (ör. gerçekten duran bir makinede "sinyal yok" beklenen bir durumdur).
+      const save = confirm('Ölçüm kalitesi şüpheli:\n\n• ' + qualityIssues.join('\n• ') +
+        '\n\nTamam: yine de kaydet (kalite notuyla)\nİptal: kaydetme, ölçümü tekrarla');
+      if(save){
+        await saveMeasurementToFirestore(qualityIssues);
+      } else {
+        log('Ölçüm kaydedilmedi (kalite şüpheli). Sonuçlar ekranda inceleme için duruyor.', 'warn');
+      }
+    } else {
+      setStatus(`Bağlı: ${device.name || 'WS300'} — ölçüm tamam`, 'on');
+      log('Ölçüm tamamlandı.');
+      await saveMeasurementToFirestore();
+    }
   }catch(err){
     log('Ölçüm hatası: ' + err.message, 'err');
     setStatus('Ölçüm başarısız', 'err');
@@ -3807,6 +3824,67 @@ function processAxisData(){
     axisSamples[ax] = g;
     log(`${ax}: ${packets.length} paket birleştirildi → ${n} örnek`);
   }
+}
+
+// ============================================================
+// ÖLÇÜM KALİTESİ KONTROLÜ
+// Kötü bir ölçüm (sensör doygun, mıknatıs oturmamış, veri takılmış…) spektrum ve
+// RMS'i bozar; kaydedilirse trende ve uyarılara normal bir ölçüm gibi girer. Bu
+// kontroller ham örnekler üzerinde çalışır ve bulguları kısa Türkçe cümleler
+// olarak döndürür (boş dizi = sorun yok).
+// Ölçek 0.0006104 g/bit ≈ 20 g / 32768: sensörün tam ölçeği int16 aralığının
+// tamamı (±20 g). Bu yüzden doygunluk, örneğin bu sınıra dayanmasıyla kesin
+// olarak anlaşılır (sinüs ağırlıklı sağlam sinyallerde yanlış alarm vermez).
+// ============================================================
+const Q_CLIP_LSB = 32760;        // |ham| bu değere ulaşırsa sensör sınırında
+const Q_CLIP_MIN_COUNT = 3;      // bu kadar örnek sınırdaysa doygunluk
+const Q_FLAT_STD_LSB = 1.5;      // AC standart sapma bunun altındaysa "sinyal yok"
+const Q_STUCK_RUN = 64;          // ≈10 ms boyunca aynı ham değer → veri takılması
+const Q_SPIKE_LSB = 16000;       // tek örneklik, iki yöne birden bu kadar sıçrama → bozuk örnek
+const Q_LEN_MISMATCH = 0.05;     // eksenler arası örnek sayısı farkı oranı
+
+function assessSignalQuality(){
+  const issues = [];
+  const lens = [];
+  for(const ax of ['X','Y','Z']){
+    const g = axisSamples[ax];
+    if(!g || !g.length){ issues.push(`${ax}: veri yok`); continue; }
+    const n = g.length;
+    lens.push(n);
+    const raw = new Int32Array(n);
+    let mean = 0;
+    for(let i=0;i<n;i++){ raw[i] = Math.round(g[i]/SCALE_G_PER_LSB); mean += raw[i]; }
+    mean /= n;
+    let varSum = 0, clip = 0, run = 1, maxRun = 1, spikes = 0;
+    for(let i=0;i<n;i++){
+      const d = raw[i]-mean; varSum += d*d;
+      if(Math.abs(raw[i]) >= Q_CLIP_LSB) clip++;
+      if(i>0){ if(raw[i]===raw[i-1]){ run++; if(run>maxRun) maxRun = run; } else run = 1; }
+      if(i>0 && i<n-1){
+        const a = raw[i]-raw[i-1], b = raw[i]-raw[i+1];
+        if(Math.abs(a) > Q_SPIKE_LSB && Math.abs(b) > Q_SPIKE_LSB && Math.sign(a) === Math.sign(b)) spikes++;
+      }
+    }
+    const std = Math.sqrt(varSum/n);
+    if(clip >= Q_CLIP_MIN_COUNT){
+      issues.push(`${ax}: sensör doygun (${clip} örnek ±20 g sınırında) — titreşim ölçüm aralığını aşıyor, değerler olduğundan düşük çıkar`);
+    }
+    if(std < Q_FLAT_STD_LSB){
+      issues.push(`${ax}: sinyal yok denecek kadar düşük (${(std*SCALE_G_PER_LSB*1000).toFixed(2)} mg) — makine çalışıyor mu, sensör yerine oturdu mu?`);
+    } else if(maxRun >= Q_STUCK_RUN){
+      issues.push(`${ax}: veri takılması (${maxRun} örnek ≈ ${(maxRun/SAMPLE_RATE_HZ*1000).toFixed(0)} ms boyunca aynı değer)`);
+    }
+    if(spikes){
+      issues.push(`${ax}: ${spikes} bozuk örnek (tek örneklik ani sıçrama) — aktarım hatası olabilir`);
+    }
+  }
+  if(lens.length > 1){
+    const mx = Math.max(...lens), mn = Math.min(...lens);
+    if(mx > 0 && (mx-mn)/mx > Q_LEN_MISMATCH){
+      issues.push(`Eksenlerin örnek sayıları farklı (${mn}–${mx}) — veri eksik aktarılmış olabilir`);
+    }
+  }
+  return issues;
 }
 
 // ============================================================

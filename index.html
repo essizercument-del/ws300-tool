@@ -3238,6 +3238,13 @@ function onNotify(event){
     const seq = dv.getUint16(0, true); // ilk 2 byte little-endian = sıra no
     // dv.buffer, tarayıcı tarafından bir sonraki bildirimde yeniden kullanılabilir;
     // referans yerine kopya alıyoruz (slice) ki veri bozulmasın.
+    // Aynı sıra numarası ikinci kez gelirse (BLE tekrar gönderimi) yok say: aksi
+    // halde paket sayısı şişer, eksik bir ölçüm "tamamlandı" sanılabilir ve
+    // birleştirilen sinyalde aynı parça iki kez yer alırdı.
+    if(axisBuffers[info.axis].some(p=>p.seq===seq)){
+      log(`${info.axis} tekrar eden paket yok sayıldı (sıra ${seq})`, 'warn');
+      return;
+    }
     const bytes = new Uint8Array(dv.buffer.slice(dv.byteOffset+2, dv.byteOffset+dv.byteLength));
     axisBuffers[info.axis].push({seq, bytes});
     lastPacketTime[info.axis] = Date.now(); // tamamlanma kontrolü için: son gerçek paketin ne zaman geldiği
@@ -3282,7 +3289,29 @@ function waitForCompletion(timeoutMs){
   });
 }
 
+// Sıra numaralarında boşluk varsa (BLE'de kaybolan paket) birleştirilen zaman
+// sinyalinde fark edilmeyen bir atlama oluşur; FFT/RMS/zarf sonuçları sessizce
+// bozulur ve bu ölçüm trende normal bir ölçüm gibi girerdi. Böyle bir ölçümü
+// işlemek/kaydetmek yerine reddedip tekrarlanmasını istiyoruz.
+function findSeqGaps(sortedPackets){
+  const missing = [];
+  for(let i=1; i<sortedPackets.length; i++){
+    for(let s=sortedPackets[i-1].seq+1; s<sortedPackets[i].seq; s++) missing.push(s);
+  }
+  return missing;
+}
+
 function processAxisData(){
+  const lossMsgs = [];
+  for(const ax of ['X','Y','Z']){
+    const missing = findSeqGaps(axisBuffers[ax].slice().sort((a,b)=>a.seq-b.seq));
+    if(missing.length){
+      lossMsgs.push(`${ax}: ${missing.length} paket eksik (sıra ${missing.slice(0,5).join(', ')}${missing.length>5?'…':''})`);
+    }
+  }
+  if(lossMsgs.length){
+    throw new Error('Paket kaybı — ' + lossMsgs.join('; ') + '. Ölçüm kaydedilmedi, lütfen tekrarlayın.');
+  }
   for(const ax of ['X','Y','Z']){
     const packets = axisBuffers[ax].slice().sort((a,b)=>a.seq-b.seq);
     let totalBytes = 0;

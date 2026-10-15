@@ -1412,7 +1412,7 @@ function openTagModal(title, initial, onSave){
     const shortCode = pendingQrCode.length > 40 ? pendingQrCode.slice(0,40)+'…' : pendingQrCode;
     qrLinkBox.innerHTML = `<label style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text-dim); cursor:pointer;">
       <input type="checkbox" id="tagModalQrLinkCheck" checked style="flex:none;">
-      <span>Taranan QR kodu ("${shortCode}") bu tag'e bağlansın</span>
+      <span>Taranan QR kodu ("${escapeHtml(shortCode)}") bu tag'e bağlansın</span>
     </label>`;
   } else {
     qrLinkBox.style.display = 'none';
@@ -1439,6 +1439,15 @@ function openTagModal(title, initial, onSave){
   document.getElementById('tagSaveBtn').onclick = save;
   document.getElementById('tagCancelBtn').onclick = ()=> modal.style.display='none';
   document.getElementById('tagModalName').focus();
+}
+
+// Kullanıcının girdiği metinler (ünite/tag adı, rulman kodu…) innerHTML'e ya da
+// rapor HTML'ine yazılmadan önce bundan geçirilmeli. Veritabanı ortak olduğu için
+// adında HTML/JS bulunan bir kayıt, onu açan herkesin tarayıcısında kod çalıştırırdı.
+function escapeHtml(v){
+  return String(v == null ? '' : v)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 // ---- ISO 10816 sınıf ve değerlendirme ----
@@ -1605,8 +1614,8 @@ function printQrLabel(){
   const wrap = document.getElementById('qrShowCanvasWrap');
   const area = document.getElementById('qrPrintArea');
   area.innerHTML = `
-    <div style="font-size:20px; font-weight:bold; margin-bottom:4px;">${selTag.name}</div>
-    <div style="font-size:13px; color:#555; margin-bottom:16px;">${selUnit.name}</div>
+    <div style="font-size:20px; font-weight:bold; margin-bottom:4px;">${escapeHtml(selTag.name)}</div>
+    <div style="font-size:13px; color:#555; margin-bottom:16px;">${escapeHtml(selUnit.name)}</div>
     <div>${wrap.innerHTML}</div>
     <div style="font-size:11px; color:#777; margin-top:12px;">WS300 Titreşim Analiz — bu etiketi tarayarak doğrudan bu tag'in ölçüm ekranına gidin</div>`;
   window.print();
@@ -2231,7 +2240,7 @@ function renderAlertsView(){
         <div class="alert-row" data-idx="${alertScanResults.indexOf(r)}">
           <div class="ar-top">
             <div>
-              <div class="ar-name">${r.unit.name} › ${r.tag.name}</div>
+              <div class="ar-name">${escapeHtml(r.unit.name)} › ${escapeHtml(r.tag.name)}</div>
               <div class="ar-sub">${r.pointLabel} · ${sub}</div>
             </div>
             <div class="ar-badge" style="background:#7c8a8022; color:var(--text-dim); border:1px solid var(--line);">${r.kind==='none' ? 'Hiç ölçülmedi' : r.daysSince+' gün'}</div>
@@ -2714,7 +2723,7 @@ function buildComparisonReportHtml(axesSeries, trend, summaryRows, bearing, char
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WS300 Karşılaştırma — ${selTag ? selTag.name : ''}</title>
+<title>WS300 Karşılaştırma — ${selTag ? escapeHtml(selTag.name) : ''}</title>
 <style>
   body{ font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif; background:#f4f4f4; color:#222; margin:0; padding:16px; }
   .wrap{ max-width:900px; margin:0 auto; background:#fff; border-radius:8px; padding:20px; box-shadow:0 1px 4px rgba(0,0,0,.08); }
@@ -5065,7 +5074,7 @@ function buildBearingAnalysisHtml(code, rpm, freqs){
     return '<div style="color:var(--text-dim)">RPM değeri girilmemiş — rulman arıza frekansları hesaplanamıyor. Ölçüm öncesi RPM alanını doldurun.</div>';
   }
   if(!freqs){
-    return `<div style="color:var(--text-dim)">"${code}" rulman kodu tanınmıyor — arıza frekansı hesaplanamadı.</div>`;
+    return `<div style="color:var(--text-dim)">"${escapeHtml(code)}" rulman kodu tanınmıyor — arıza frekansı hesaplanamadı.</div>`;
   }
   const rows = Object.keys(freqs).map(key=>{
     const label = { BPFO:'BPFO — Dış bilezik top geçiş frekansı', BPFI:'BPFI — İç bilezik top geçiş frekansı', BSF:'BSF — Top dönüş frekansı', FTF:'FTF — Kafes temel frekansı' }[key];
@@ -5077,7 +5086,7 @@ function buildBearingAnalysisHtml(code, rpm, freqs){
     </label>`;
   }).join('');
   return `
-    <div style="font-size:11px; color:var(--text-dim); margin-bottom:8px;">Rulman: ${code} · RPM: ${rpm} · Mil frekansı: ${(rpm/60).toFixed(2)} Hz</div>
+    <div style="font-size:11px; color:var(--text-dim); margin-bottom:8px;">Rulman: ${escapeHtml(code)} · RPM: ${escapeHtml(rpm)} · Mil frekansı: ${(rpm/60).toFixed(2)} Hz</div>
     <div style="font-size:13px;">${rows}</div>
     <div style="font-size:11px; color:var(--text-dim); margin-top:8px;">Çizgileri PSD ve Zarf grafiklerinin hemen üstündeki düğmelerle, her grafikte ayrı ayrı açıp kapatabilirsiniz.</div>`;
 }
@@ -5616,7 +5625,7 @@ function buildBearingAnalysisPrintHtml(code, rpm, freqs){
     return '<div style="font-size:12px; color:#888;">RPM değeri girilmemiş — rulman arıza frekansları hesaplanamadı.</div>';
   }
   if(!freqs){
-    return `<div style="font-size:12px; color:#888;">"${code}" rulman kodu tanınmıyor — arıza frekansı hesaplanamadı.</div>`;
+    return `<div style="font-size:12px; color:#888;">"${escapeHtml(code)}" rulman kodu tanınmıyor — arıza frekansı hesaplanamadı.</div>`;
   }
   const labelMap = { BPFO:'BPFO — Dış bilezik top geçiş frekansı', BPFI:'BPFI — İç bilezik top geçiş frekansı', BSF:'BSF — Top dönüş frekansı', FTF:'FTF — Kafes temel frekansı' };
   const rows = Object.keys(freqs).map(key=>`
@@ -5625,7 +5634,7 @@ function buildBearingAnalysisPrintHtml(code, rpm, freqs){
       <td style="padding:5px 8px; border:1px solid #ccc; font-family:'JetBrains Mono',monospace;">${freqs[key].toFixed(2)} Hz</td>
     </tr>`).join('');
   return `
-    <div style="font-size:12px; color:#555; margin-bottom:6px;">Rulman: ${code} · RPM: ${rpm} · Mil frekansı: ${(rpm/60).toFixed(2)} Hz</div>
+    <div style="font-size:12px; color:#555; margin-bottom:6px;">Rulman: ${escapeHtml(code)} · RPM: ${escapeHtml(rpm)} · Mil frekansı: ${(rpm/60).toFixed(2)} Hz</div>
     <table style="width:100%; border-collapse:collapse; font-size:12.5px;">${rows}</table>`;
 }
 
@@ -5908,11 +5917,11 @@ function buildReportHeaderTableHtml(meta){
     <table style="width:100%; border-collapse:collapse; margin-bottom:16px; font-size:13px;">
       <tr>
         <td style="padding:6px; font-weight:bold; width:140px;">Ünite</td>
-        <td style="padding:6px;">${selUnit ? selUnit.name : '—'}</td>
+        <td style="padding:6px;">${selUnit ? escapeHtml(selUnit.name) : '—'}</td>
       </tr>
       <tr>
         <td style="padding:6px; font-weight:bold;">Tag</td>
-        <td style="padding:6px;">${selTag ? selTag.name : '—'}</td>
+        <td style="padding:6px;">${selTag ? escapeHtml(selTag.name) : '—'}</td>
       </tr>
       <tr>
         <td style="padding:6px; font-weight:bold;">Ölçüm Noktası</td>
@@ -5920,7 +5929,7 @@ function buildReportHeaderTableHtml(meta){
       </tr>
       <tr>
         <td style="padding:6px; font-weight:bold;">RPM</td>
-        <td style="padding:6px;">${meta.rpm || '—'}</td>
+        <td style="padding:6px;">${escapeHtml(meta.rpm || '—')}</td>
       </tr>
     </table>`;
 }
@@ -6206,7 +6215,7 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WS300 Rapor — ${selTag ? selTag.name : ''}</title>
+<title>WS300 Rapor — ${selTag ? escapeHtml(selTag.name) : ''}</title>
 <style>
   body{ font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif; background:#f4f4f4; color:#222; margin:0; padding:16px; }
   .wrap{ max-width:900px; margin:0 auto; background:#fff; border-radius:8px; padding:20px; box-shadow:0 1px 4px rgba(0,0,0,.08); }

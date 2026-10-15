@@ -3514,14 +3514,17 @@ async function connectDevice(){
     setStatus('Bağlanıyor…', 'busy');
     server = await device.gatt.connect();
     log('GATT bağlantısı kuruldu.');
-
-    setStatus(`Bağlı: ${device.name || 'WS300'}`, 'on');
-    document.getElementById('btnMeasure').disabled = false;
-    document.getElementById('btnConnect').textContent = 'Yeniden Bağlan';
+    setConnectedUi();
   }catch(err){
     log('Bağlantı hatası: ' + err.message, 'err');
     setStatus('Bağlantı başarısız', 'err');
   }
+}
+
+function setConnectedUi(){
+  setStatus(`Bağlı: ${device.name || 'WS300'}`, 'on');
+  document.getElementById('btnMeasure').disabled = measuring;
+  document.getElementById('btnConnect').textContent = 'Yeniden Bağlan';
 }
 
 function onDisconnected(){
@@ -3529,6 +3532,37 @@ function onDisconnected(){
   setStatus('Bağlantı koptu', 'err');
   document.getElementById('btnMeasure').disabled = true;
   activeNotifyChars = []; // bağlantı koptuğunda eski karakteristik referansları geçersiz
+  // Ölçüm sürüyorsa 15 sn zaman aşımını beklemeden hemen bitir.
+  if(abortMeasurement) abortMeasurement(new Error('Ölçüm sırasında cihaz bağlantısı koptu'));
+  autoReconnect();
+}
+
+// Bağlantı koptuğunda (sensör menzil sınırında, kısa parazit vb.) cihaz seçme
+// penceresini açmadan aynı sensöre birkaç kez kendiliğinden yeniden bağlanmayı dener.
+const RECONNECT_DELAYS_MS = [1000, 2000, 4000];
+let reconnecting = false;
+async function autoReconnect(){
+  const dev = device;
+  if(reconnecting || !dev) return;
+  reconnecting = true;
+  try{
+    for(let i=0; i<RECONNECT_DELAYS_MS.length; i++){
+      await new Promise(r=>setTimeout(r, RECONNECT_DELAYS_MS[i]));
+      if(device !== dev || dev.gatt.connected) return; // kullanıcı bu arada elle bağlandı
+      setStatus(`Yeniden bağlanılıyor… (${i+1}/${RECONNECT_DELAYS_MS.length})`, 'busy');
+      try{
+        server = await dev.gatt.connect();
+        log('Bağlantı yeniden kuruldu.');
+        setConnectedUi();
+        return;
+      }catch(err){
+        log(`Yeniden bağlanma denemesi ${i+1} başarısız: ${err.message}`, 'warn');
+      }
+    }
+    setStatus('Bağlantı koptu — "Yeniden Bağlan" ile tekrar deneyin', 'err');
+  }finally{
+    reconnecting = false;
+  }
 }
 
 // ============================================================
@@ -3557,6 +3591,10 @@ async function cleanupNotifications(){
 // ============================================================
 async function runMeasurement(){
   if(measuring) return;
+  if(!server || !server.connected){
+    log('Cihaz bağlı değil — önce "Cihaza Bağlan".', 'err');
+    return;
+  }
   measuring = true;
   document.getElementById('btnMeasure').disabled = true;
   document.getElementById('btnExport').disabled = true;
@@ -3624,7 +3662,8 @@ async function runMeasurement(){
     await cleanupNotifications(); // başarısız denemeden kalan dinleyicileri de temizle
   }finally{
     measuring = false;
-    document.getElementById('btnMeasure').disabled = false;
+    // Bağlantı koptuysa düğme kapalı kalsın; yeniden bağlanınca setConnectedUi() açar.
+    document.getElementById('btnMeasure').disabled = !(server && server.connected);
     setProgress(null);
   }
 }
@@ -3687,10 +3726,12 @@ function updateProgressFromBuffers(){
 // QUIET_MS boyunca o eksene yeni paket gelmediğini doğruluyoruz — hâlâ paket
 // geliyorsa, count'un düşük olduğu anlaşılır ve beklemeye devam edilir.
 const QUIET_MS = 250;
+let abortMeasurement = null; // ölçüm beklenirken bağlantı koparsa onDisconnected() çağırır
 
 function waitForCompletion(timeoutMs){
   return new Promise((resolve, reject)=>{
     const start = Date.now();
+    abortMeasurement = (err)=>{ clearInterval(iv); abortMeasurement = null; reject(err); };
     const iv = setInterval(()=>{
       const now = Date.now();
       const done = ['X','Y','Z'].every(ax=>{
@@ -3698,9 +3739,10 @@ function waitForCompletion(timeoutMs){
         if(exp === null || axisBuffers[ax].length < exp+1) return false;
         return (now - lastPacketTime[ax]) >= QUIET_MS;
       });
-      if(done){ clearInterval(iv); resolve(); return; }
+      if(done){ clearInterval(iv); abortMeasurement = null; resolve(); return; }
       if(Date.now()-start > timeoutMs){
         clearInterval(iv);
+        abortMeasurement = null;
         reject(new Error('Zaman aşımı — tüm eksenler tamamlanmadı ('+
           ['X','Y','Z'].map(ax=>`${ax}:${axisBuffers[ax].length}/${axisExpectedCount[ax]!==null?axisExpectedCount[ax]+1:'?'}`).join(', ')+')'));
       }

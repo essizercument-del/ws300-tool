@@ -1,14 +1,23 @@
 // WS300 Titreşim Analiz — Service Worker
 // Uygulamayı ana ekrandan/PWA olarak açılabilir ve çevrimdışı da yüklenebilir
 // yapmak için basit bir "stale-while-revalidate" önbellekleme uygular.
-// Sadece kendi kaynağımızdaki (GitHub Pages) dosyaları önbellekler — Firebase/
-// Firestore gibi dış istekler servis worker'a hiç girmeden doğrudan ağa gider.
-const CACHE_NAME = 'ws300-cache-v4';
+// Kendi kaynağımızdaki (GitHub Pages) dosyaları ve index.html'in yüklediği Firebase
+// kütüphanelerini önbellekler. Firestore/Auth API istekleri servis worker'a hiç
+// girmeden doğrudan ağa gider (çevrimdışı verileri Firestore'un kendi önbelleği tutar).
+const CACHE_NAME = 'ws300-cache-v5';
 const APP_SHELL = [
   './index.html',
   './manifest.json',
   './icon-192.png',
   './icon-512.png'
+];
+// index.html'deki <script src> adresleriyle BİREBİR aynı olmalı (sürüm değişirse burası da).
+// Bunlar önbellekte olmazsa internetsiz açılışta `firebase` tanımsız kalır ve uygulama
+// hiç başlamaz. Sürümlü adresler değişmediği için önbellek-öncelikli sunulur.
+const FIREBASE_LIBS = [
+  'https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js',
+  'https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js',
+  'https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js'
 ];
 
 self.addEventListener('install', (event) => {
@@ -18,11 +27,16 @@ self.addEventListener('install', (event) => {
   // önbelleğe alınır ve kurulum yine de tamamlanır.
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then((cache) => Promise.all(
-        APP_SHELL.map((url) => cache.add(url).catch((err) => {
+      .then((cache) => Promise.all([
+        ...APP_SHELL.map((url) => cache.add(url).catch((err) => {
           console.warn('sw.js: önbelleğe alınamadı, atlanıyor:', url, err);
-        }))
-      ))
+        })),
+        // <script> etiketi bu dosyaları CORS'suz (no-cors) ister; aynı kipte alıp
+        // saklıyoruz. Yanıt "opak" olur ama <script> için sorunsuz çalışır.
+        ...FIREBASE_LIBS.map((url) => fetch(url, { mode: 'no-cors' })
+          .then((res) => cache.put(url, res))
+          .catch((err) => { console.warn('sw.js: önbelleğe alınamadı, atlanıyor:', url, err); }))
+      ]))
       .then(() => self.skipWaiting())
   );
 });
@@ -39,7 +53,19 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
-  if (url.origin !== self.location.origin) return; // dış istekleri (Firebase vb.) dokunmadan bırak
+  if (FIREBASE_LIBS.includes(req.url)) {
+    event.respondWith(
+      caches.match(req.url).then((cached) => cached || fetch(req).then((res) => {
+        if (res && (res.status === 200 || res.type === 'opaque')) {
+          const clone = res.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(req.url, clone));
+        }
+        return res;
+      }))
+    );
+    return;
+  }
+  if (url.origin !== self.location.origin) return; // diğer dış istekleri (Firestore/Auth API vb.) dokunmadan bırak
 
   // index.html (ve manifest.json) için AĞ ÖNCELİKLİ strateji: her sayfa
   // açılışında önce internetten en güncel sürüm istenir. Böylece kod her

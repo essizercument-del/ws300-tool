@@ -48,6 +48,15 @@ const firebaseConfig = {
 };
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
+// ÇEVRİMDIŞI ÇALIŞMA: Firestore'un yerel (IndexedDB) önbelleği. Başka hiçbir
+// Firestore çağrısından ÖNCE açılmalı. Açıkken internet yokken ünite/tag listeleri
+// ve trend önbellekten okunur; ölçüm kayıtları cihazda kuyruğa alınır ve uygulama
+// kapatılsa bile internet geldiğinde otomatik gönderilir.
+db.enablePersistence({ synchronizeTabs: true }).catch(err=>{
+  // failed-precondition: başka sekme kilitli tutuyor; unimplemented: tarayıcı desteklemiyor.
+  // İkisinde de uygulama çalışır, sadece kayıtlar kalıcı kuyruğa alınamaz.
+  console.warn('Firestore çevrimdışı önbellek açılamadı:', err.code || err);
+});
 </script>
 <script>
 /*!
@@ -786,7 +795,9 @@ async function renderSelectView(){
     addBtn.innerHTML = '+ Ünite ekle';
     addBtn.onclick = ()=> openNameModal('Yeni ünite', '', async(name)=>{
       const order = await nextOrder(unitsCol());
-      await unitsCol().add({name, order, createdAt: firebase.firestore.FieldValue.serverTimestamp()});
+      // Beklenmiyor: yazma yerel önbelleğe anında düşer, internet yoksa sonra gönderilir.
+      unitsCol().add({name, order, createdAt: firebase.firestore.FieldValue.serverTimestamp()})
+        .catch(err=> alert('Ünite kaydedilemedi: ' + err.message));
       renderSelectView();
     });
     const snap = await unitsCol().orderBy('order').get();
@@ -816,7 +827,8 @@ async function renderSelectView(){
     addBtn.innerHTML = '+ Tag ekle';
     addBtn.onclick = ()=> openTagModal('Yeni tag', {}, async(data)=>{
       const order = await nextOrder(tagsCol(selUnit.id));
-      await tagsCol(selUnit.id).add({...data, order, createdAt: firebase.firestore.FieldValue.serverTimestamp()});
+      tagsCol(selUnit.id).add({...data, order, createdAt: firebase.firestore.FieldValue.serverTimestamp()})
+        .catch(err=> alert('Tag kaydedilemedi: ' + err.message));
       renderSelectView();
     });
     const snap = await tagsCol(selUnit.id).orderBy('order').get();
@@ -1331,11 +1343,14 @@ async function saveMeasurementToFirestore(){
   if(!selUnit || !selTag || !selPoint) return;
   const rpmVal = parseFloat(document.getElementById('rpmInput').value) || null;
   const cls = isoClass(selTag.kw, selTag.foundation);
+  const measTs = firebase.firestore.Timestamp.now();
   const doc = {
     point: selPoint,
     rpm: rpmVal,
     isoClass: cls,
-    timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+    // Ölçümün ALINDIĞI an (telefon saati). serverTimestamp() kullanılmıyor: çevrimdışı
+    // alınan bir ölçüm ertesi gün gönderilirse gönderildiği günün tarihini alırdı.
+    timestamp: measTs,
     sampleRate: SAMPLE_RATE_HZ, // bu alan olmayan kayıtlar eski (12800 Hz varsayımlı, frekansları 2 kat hatalı) ölçümlerdir
     velRMS: {},
     isoZone: {},
@@ -1362,8 +1377,12 @@ async function saveMeasurementToFirestore(){
   const shaftEst = liveShaftHz(rpmVal);
   if(shaftEst) doc.shaftHz = Math.round(shaftEst*100)/100;
   try{
-    await measCol(selUnit.id, selTag.id).add(doc);
-    log('Ölçüm Firestore kaydı yapıldı ('+(selPoint==='on'?'Ön':'Arka')+').');
+    // Yazmaları BEKLEMİYORUZ: Firestore'un set() sözü ancak sunucu onaylayınca
+    // tamamlanır; internet yokken hiç tamamlanmaz ve "Ölçüm Al" düğmesi kilitli
+    // kalırdı. Yazma yerel önbelleğe anında uygulanır (ekranlar hemen günceller),
+    // sunucuya gönderim arka planda, internet geldiğinde olur.
+    const pointLabel = selPoint==='on'?'Ön':'Arka';
+    const measWrite = measCol(selUnit.id, selTag.id).doc().set(doc);
     // Uyarılar ekranı her tag için 100'lerce ölçüm dokümanını (spektrum
     // verisiyle birlikte) taramak zorunda kalmasın diye, tag dokümanının
     // üzerine bu noktanın son ölçüm özetini (rulman verisi olmadan, küçük)
@@ -1385,10 +1404,10 @@ async function saveMeasurementToFirestore(){
       newBaseline = {};
       ['X','Y','Z'].forEach(ax=>{ newBaseline[ax] = medianOfNums(first.map(r=>r.velRMS[ax])); });
     }
-    await tagsCol(selUnit.id).doc(selTag.id).set({
+    const summaryWrite = tagsCol(selUnit.id).doc(selTag.id).set({
       lastMeas: {
         [selPoint]: {
-          timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+          timestamp: measTs,
           velRMS: doc.velRMS,
           isoZone: doc.isoZone,
           rpm: rpmVal,
@@ -1400,12 +1419,18 @@ async function saveMeasurementToFirestore(){
         }
       }
     }, {merge:true});
+    log(navigator.onLine
+      ? 'Ölçüm kaydedildi ('+pointLabel+'), sunucuya gönderiliyor…'
+      : 'Ölçüm cihaza kaydedildi ('+pointLabel+') — internet yok, bağlantı gelince otomatik gönderilecek.', navigator.onLine ? '' : 'warn');
+    Promise.all([measWrite, summaryWrite])
+      .then(()=> log('Ölçüm sunucuya gönderildi ('+pointLabel+').'))
+      .catch(err=> log('Firestore kayıt hatası: ' + err.message, 'err'));
     // selTag'i de güncel tut — aynı ekranda art arda ölçüm alınırsa bir
     // sonraki save'in prevSummary'si doğru (bir önceki, bayat değil) olsun.
     selTag.lastMeas = selTag.lastMeas || {};
-    selTag.lastMeas[selPoint] = { timestamp:null, velRMS:doc.velRMS, isoZone:doc.isoZone, rpm:rpmVal, prevVelRMS: prevSummary?(prevSummary.velRMS||null):null, prevIsoZone: prevSummary?(prevSummary.isoZone||null):null, recent: newRecent, baseline: newBaseline, count: seenCount };
-    await loadTrend();
-    renderScreeningNote();
+    selTag.lastMeas[selPoint] = { timestamp:measTs, velRMS:doc.velRMS, isoZone:doc.isoZone, rpm:rpmVal, prevVelRMS: prevSummary?(prevSummary.velRMS||null):null, prevIsoZone: prevSummary?(prevSummary.isoZone||null):null, recent: newRecent, baseline: newBaseline, count: seenCount };
+    // Trend okuması zayıf bağlantıda saniyelerce sürebilir; ölçüm akışını bekletmesin.
+    loadTrend().finally(renderScreeningNote);
     refreshAlertBadge(); // arka planda, sonucu beklemeden — buton sayısını günceller
   }catch(err){
     log('Firestore kayıt hatası: ' + err.message, 'err');
@@ -3021,14 +3046,17 @@ async function connectDevice(){
     setStatus('Bağlanıyor…', 'busy');
     server = await device.gatt.connect();
     log('GATT bağlantısı kuruldu.');
-
-    setStatus(`Bağlı: ${device.name || 'WS300'}`, 'on');
-    document.getElementById('btnMeasure').disabled = false;
-    document.getElementById('btnConnect').textContent = 'Yeniden Bağlan';
+    setConnectedUi();
   }catch(err){
     log('Bağlantı hatası: ' + err.message, 'err');
     setStatus('Bağlantı başarısız', 'err');
   }
+}
+
+function setConnectedUi(){
+  setStatus(`Bağlı: ${device.name || 'WS300'}`, 'on');
+  document.getElementById('btnMeasure').disabled = measuring;
+  document.getElementById('btnConnect').textContent = 'Yeniden Bağlan';
 }
 
 function onDisconnected(){
@@ -3036,6 +3064,37 @@ function onDisconnected(){
   setStatus('Bağlantı koptu', 'err');
   document.getElementById('btnMeasure').disabled = true;
   activeNotifyChars = []; // bağlantı koptuğunda eski karakteristik referansları geçersiz
+  // Ölçüm sürüyorsa 15 sn zaman aşımını beklemeden hemen bitir.
+  if(abortMeasurement) abortMeasurement(new Error('Ölçüm sırasında cihaz bağlantısı koptu'));
+  autoReconnect();
+}
+
+// Bağlantı koptuğunda (sensör menzil sınırında, kısa parazit vb.) cihaz seçme
+// penceresini açmadan aynı sensöre birkaç kez kendiliğinden yeniden bağlanmayı dener.
+const RECONNECT_DELAYS_MS = [1000, 2000, 4000];
+let reconnecting = false;
+async function autoReconnect(){
+  const dev = device;
+  if(reconnecting || !dev) return;
+  reconnecting = true;
+  try{
+    for(let i=0; i<RECONNECT_DELAYS_MS.length; i++){
+      await new Promise(r=>setTimeout(r, RECONNECT_DELAYS_MS[i]));
+      if(device !== dev || dev.gatt.connected) return; // kullanıcı bu arada elle bağlandı
+      setStatus(`Yeniden bağlanılıyor… (${i+1}/${RECONNECT_DELAYS_MS.length})`, 'busy');
+      try{
+        server = await dev.gatt.connect();
+        log('Bağlantı yeniden kuruldu.');
+        setConnectedUi();
+        return;
+      }catch(err){
+        log(`Yeniden bağlanma denemesi ${i+1} başarısız: ${err.message}`, 'warn');
+      }
+    }
+    setStatus('Bağlantı koptu — "Yeniden Bağlan" ile tekrar deneyin', 'err');
+  }finally{
+    reconnecting = false;
+  }
 }
 
 // ============================================================
@@ -3064,6 +3123,10 @@ async function cleanupNotifications(){
 // ============================================================
 async function runMeasurement(){
   if(measuring) return;
+  if(!server || !server.connected){
+    log('Cihaz bağlı değil — önce "Cihaza Bağlan".', 'err');
+    return;
+  }
   measuring = true;
   document.getElementById('btnMeasure').disabled = true;
   document.getElementById('btnExport').disabled = true;
@@ -3131,7 +3194,8 @@ async function runMeasurement(){
     await cleanupNotifications(); // başarısız denemeden kalan dinleyicileri de temizle
   }finally{
     measuring = false;
-    document.getElementById('btnMeasure').disabled = false;
+    // Bağlantı koptuysa düğme kapalı kalsın; yeniden bağlanınca setConnectedUi() açar.
+    document.getElementById('btnMeasure').disabled = !(server && server.connected);
     setProgress(null);
   }
 }
@@ -3194,10 +3258,12 @@ function updateProgressFromBuffers(){
 // QUIET_MS boyunca o eksene yeni paket gelmediğini doğruluyoruz — hâlâ paket
 // geliyorsa, count'un düşük olduğu anlaşılır ve beklemeye devam edilir.
 const QUIET_MS = 250;
+let abortMeasurement = null; // ölçüm beklenirken bağlantı koparsa onDisconnected() çağırır
 
 function waitForCompletion(timeoutMs){
   return new Promise((resolve, reject)=>{
     const start = Date.now();
+    abortMeasurement = (err)=>{ clearInterval(iv); abortMeasurement = null; reject(err); };
     const iv = setInterval(()=>{
       const now = Date.now();
       const done = ['X','Y','Z'].every(ax=>{
@@ -3205,9 +3271,10 @@ function waitForCompletion(timeoutMs){
         if(exp === null || axisBuffers[ax].length < exp+1) return false;
         return (now - lastPacketTime[ax]) >= QUIET_MS;
       });
-      if(done){ clearInterval(iv); resolve(); return; }
+      if(done){ clearInterval(iv); abortMeasurement = null; resolve(); return; }
       if(Date.now()-start > timeoutMs){
         clearInterval(iv);
+        abortMeasurement = null;
         reject(new Error('Zaman aşımı — tüm eksenler tamamlanmadı ('+
           ['X','Y','Z'].map(ax=>`${ax}:${axisBuffers[ax].length}/${axisExpectedCount[ax]!==null?axisExpectedCount[ax]+1:'?'}`).join(', ')+')'));
       }

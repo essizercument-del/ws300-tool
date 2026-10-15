@@ -2,7 +2,7 @@
 <html lang="tr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>WS300 Titreşim Analiz — Faz 2</title>
 <!-- PWA: telefona "uygulama gibi" (kendi ikonuyla, tam ekran, ana ekrandan) yüklenebilmesi için -->
 <link rel="manifest" href="manifest.json">
@@ -14,14 +14,37 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="WS300">
 <script>
-// Tanı amaçlı: herhangi bir JS hatası olursa devtools'a gerek kalmadan
-// ekranda büyük bir uyarı olarak göster.
-window.addEventListener('error', function(e){
-  alert('JS HATASI: ' + e.message + '\nDosya: ' + e.filename + '\nSatır: ' + e.lineno);
-});
-window.addEventListener('unhandledrejection', function(e){
-  alert('PROMISE HATASI: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
-});
+// Tanı amaçlı: herhangi bir JS hatası olursa devtools'a gerek kalmadan ekranda
+// göster. Eskiden alert() kullanılıyordu; sahada her hatada işi durduran bir
+// pencere açılıyordu. Artık ekranın üstünde kapatılabilir kırmızı bir şerit
+// çıkıyor (aynı hata tekrar ederse sayacı artıyor).
+(function(){
+  let bar = null, count = 0, lastMsg = '';
+  function show(msg){
+    console.error(msg);
+    if(!document.body){ document.addEventListener('DOMContentLoaded', ()=>show(msg), {once:true}); return; }
+    if(!bar){
+      bar = document.createElement('div');
+      bar.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:10000;background:#7a1010;color:#fff;font:12px/1.4 monospace;padding:8px 36px 8px 10px;white-space:pre-wrap;word-break:break-word;max-height:40vh;overflow:auto';
+      const x = document.createElement('button');
+      x.textContent = '✕';
+      x.style.cssText = 'position:absolute;top:4px;right:6px;background:none;border:none;color:#fff;font-size:16px;cursor:pointer';
+      x.onclick = ()=>{ bar.remove(); bar = null; count = 0; lastMsg = ''; };
+      bar.appendChild(x);
+      bar.appendChild(document.createElement('span'));
+      document.body.appendChild(bar);
+    }
+    count = (msg === lastMsg) ? count + 1 : 1;
+    lastMsg = msg;
+    bar.lastChild.textContent = msg + (count > 1 ? ` (×${count})` : '');
+  }
+  window.addEventListener('error', function(e){
+    show('JS HATASI: ' + e.message + '\nDosya: ' + e.filename + '\nSatır: ' + e.lineno);
+  });
+  window.addEventListener('unhandledrejection', function(e){
+    show('PROMISE HATASI: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  });
+})();
 </script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
@@ -6565,11 +6588,11 @@ document.getElementById('btnEditTagFromStatus').addEventListener('click', ()=>{
   ov.style.cssText = 'display:none;position:fixed;inset:0;z-index:9999;background:var(--bg);align-items:center;justify-content:center;flex-direction:column;gap:18px;padding:28px';
   ov.innerHTML =
     '<div style="font-family:monospace;font-size:24px;font-weight:700;letter-spacing:3px;color:var(--phosphor)">WS300</div>'+
-    '<div style="font-size:12px;color:var(--text-dim)">Devam etmek icin giris yapin</div>'+
+    '<div style="font-size:12px;color:var(--text-dim)">Devam etmek için giriş yapın</div>'+
     '<div style="width:100%;max-width:320px;display:flex;flex-direction:column;gap:10px">'+
       '<input id="loginEmail" type="email" autocomplete="username" placeholder="E-posta" style="padding:12px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--text);font-size:15px">'+
-      '<input id="loginPass" type="password" autocomplete="current-password" placeholder="Sifre" style="padding:12px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--text);font-size:15px">'+
-      '<button id="loginBtn" style="padding:12px;border-radius:6px;border:none;background:var(--phosphor);color:#06120b;font-weight:700;font-size:15px;cursor:pointer">Giris Yap</button>'+
+      '<input id="loginPass" type="password" autocomplete="current-password" placeholder="Şifre" style="padding:12px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--text);font-size:15px">'+
+      '<button id="loginBtn" style="padding:12px;border-radius:6px;border:none;background:var(--phosphor);color:#06120b;font-weight:700;font-size:15px;cursor:pointer">Giriş Yap</button>'+
       '<div id="loginErr" style="min-height:18px;font-size:12px;color:var(--red);text-align:center"></div>'+
     '</div>';
   document.body.appendChild(ov);
@@ -6577,14 +6600,14 @@ document.getElementById('btnEditTagFromStatus').addEventListener('click', ()=>{
         btn = ov.querySelector('#loginBtn'), err = ov.querySelector('#loginErr');
   function doLogin(){
     err.textContent = '';
-    if(!email.value.trim() || !pass.value){ err.textContent = 'E-posta ve sifre girin'; return; }
-    btn.disabled = true; btn.textContent = 'Giris yapiliyor...';
+    if(!email.value.trim() || !pass.value){ err.textContent = 'E-posta ve şifre girin'; return; }
+    btn.disabled = true; btn.textContent = 'Giriş yapılıyor...';
     firebase.auth().signInWithEmailAndPassword(email.value.trim(), pass.value).catch(e=>{
       const c = e && e.code || '';
-      err.textContent = c==='auth/network-request-failed' ? 'Internet baglantisi yok'
-        : c==='auth/too-many-requests' ? 'Cok fazla deneme, biraz sonra tekrar deneyin'
-        : 'Giris basarisiz: e-posta veya sifre hatali';
-      btn.disabled = false; btn.textContent = 'Giris Yap';
+      err.textContent = c==='auth/network-request-failed' ? 'İnternet bağlantısı yok'
+        : c==='auth/too-many-requests' ? 'Çok fazla deneme, biraz sonra tekrar deneyin'
+        : 'Giriş başarısız: e-posta veya şifre hatalı';
+      btn.disabled = false; btn.textContent = 'Giriş Yap';
     });
   }
   btn.addEventListener('click', doLogin);
@@ -6595,9 +6618,9 @@ document.getElementById('btnEditTagFromStatus').addEventListener('click', ()=>{
   const hdr = document.querySelector('header');
   if(hdr){
     const out = document.createElement('button');
-    out.id = 'btnLogout'; out.textContent = 'Cikis'; out.style.cssText =
+    out.id = 'btnLogout'; out.textContent = 'Çıkış'; out.style.cssText =
       'display:none;position:absolute;top:10px;right:10px;padding:5px 10px;border-radius:4px;border:1px solid var(--line);background:transparent;color:var(--text-dim);font-size:11px;cursor:pointer';
-    out.addEventListener('click', ()=>{ if(confirm('Oturum kapatilsin mi?')) firebase.auth().signOut(); });
+    out.addEventListener('click', ()=>{ if(confirm('Oturum kapatılsın mı?')) firebase.auth().signOut(); });
     if(getComputedStyle(hdr).position==='static') hdr.style.position='relative';
     hdr.appendChild(out);
   }
@@ -6608,7 +6631,7 @@ document.getElementById('btnEditTagFromStatus').addEventListener('click', ()=>{
     if(user){
       ov.style.display = 'none';
       if(out) out.style.display = 'block';
-      btn.disabled = false; btn.textContent = 'Giris Yap'; pass.value = '';
+      btn.disabled = false; btn.textContent = 'Giriş Yap'; pass.value = '';
       if(!started){ started = true; renderSelectView(); refreshAlertBadge(); }
     } else {
       ov.style.display = 'flex';

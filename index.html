@@ -785,8 +785,45 @@ function unitsCol(){ return db.collection('units'); }
 function tagsCol(unitId){ return db.collection('units').doc(unitId).collection('tags'); }
 function measCol(unitId, tagId){ return db.collection('units').doc(unitId).collection('tags').doc(tagId).collection('measurements'); }
 
+// ÇEVRİMDIŞI OKUMA: Firestore'un varsayılan get()'i internet yokken bile önce
+// sunucuya ulaşmayı dener, önbelleğe ancak bu deneme başarısız olunca döner; bu
+// sorgu başına saniyeler sürebiliyor ve liste "Yükleniyor…"da takılı görünüyordu.
+// İnternet yokken doğrudan önbellekten okunur; varken sunucudan, ama sunucu
+// FS_SERVER_TIMEOUT_MS içinde cevap vermezse (zayıf bağlantı) önbellekten.
+// Önbellekten gelen sonuç snap.metadata.fromCache ile anlaşılır — eksik olabilir,
+// bu yüzden ondan türetilen hiçbir şey veritabanına geri yazılmamalı.
+const FS_SERVER_TIMEOUT_MS = 4000;
+function fsGet(ref){
+  if(!navigator.onLine) return ref.get({source:'cache'}).catch(()=> ref.get());
+  const server = ref.get();
+  let timer;
+  const fallback = new Promise(resolve=>{
+    timer = setTimeout(()=> resolve(ref.get({source:'cache'}).catch(()=> server)), FS_SERVER_TIMEOUT_MS);
+  });
+  return Promise.race([server.finally(()=> clearTimeout(timer)), fallback]);
+}
+
+// Girişte (internet varken) tüm ünite ve tag listelerini paralel okuyup önbelleğe
+// alır; sahada internetsiz açıldığında hepsi görünsün. Uyarı taraması da bunları
+// okuyor ama sıralı ve yavaş (nokta başına ölçüm sorguları); bitmeden uçak moduna
+// geçilirse bazı ünitelerin tag'leri önbellekte olmuyordu.
+async function warmOfflineCache(){
+  if(!navigator.onLine) return;
+  try{
+    const units = await unitsCol().get();
+    await Promise.all(units.docs.map(u=> tagsCol(u.id).get()));
+  }catch(err){
+    console.warn('Çevrimdışı önbellek hazırlanamadı:', err);
+  }
+}
+
+// Önbellekte olmayan bir liste için "henüz kayıt yok" demek yanıltıcı olur.
+function offlineEmptyHtml(what){
+  return '<div class="trend-empty">İnternet yok ve bu '+what+' bu cihazda henüz önbellekte değil.<br><span style="font-size:11px;">İnternet varken uygulamayı açıp birkaç saniye bekleyin; listeler sonra internetsiz de görünür.</span></div>';
+}
+
 async function nextOrder(colRef){
-  const snap = await colRef.orderBy('order','desc').limit(1).get();
+  const snap = await fsGet(colRef.orderBy('order','desc').limit(1));
   if(snap.empty) return 0;
   return (snap.docs[0].data().order || 0) + 1;
 }
@@ -823,8 +860,10 @@ async function renderSelectView(){
         .catch(err=> alert('Ünite kaydedilemedi: ' + err.message));
       renderSelectView();
     });
-    const snap = await unitsCol().orderBy('order').get();
-    if(snap.empty){ list.innerHTML = '<div class="trend-empty">Henüz ünite yok. Aşağıdan ekleyin.</div>'; return; }
+    let snap;
+    try{ snap = await fsGet(unitsCol().orderBy('order')); }
+    catch(err){ list.innerHTML = '<div class="trend-empty">Üniteler yüklenemedi: '+escapeHtml(err.message)+'</div>'; return; }
+    if(snap.empty){ list.innerHTML = (snap.metadata.fromCache && !navigator.onLine) ? offlineEmptyHtml('ünite listesi') : '<div class="trend-empty">Henüz ünite yok. Aşağıdan ekleyin.</div>'; return; }
     const docs = snap.docs;
     list.innerHTML = '';
     docs.forEach((d,i)=>{
@@ -854,8 +893,10 @@ async function renderSelectView(){
         .catch(err=> alert('Tag kaydedilemedi: ' + err.message));
       renderSelectView();
     });
-    const snap = await tagsCol(selUnit.id).orderBy('order').get();
-    if(snap.empty){ list.innerHTML = '<div class="trend-empty">Bu ünitede henüz tag yok. Aşağıdan ekleyin.</div>'; return; }
+    let snap;
+    try{ snap = await fsGet(tagsCol(selUnit.id).orderBy('order')); }
+    catch(err){ list.innerHTML = '<div class="trend-empty">Tag listesi yüklenemedi: '+escapeHtml(err.message)+'</div>'; return; }
+    if(snap.empty){ list.innerHTML = (snap.metadata.fromCache && !navigator.onLine) ? offlineEmptyHtml('ünitenin tag listesi') : '<div class="trend-empty">Bu ünitede henüz tag yok. Aşağıdan ekleyin.</div>'; return; }
     const docs = snap.docs;
     list.innerHTML = '';
     // Sorunlu tag'lar artık ayrı bir "Uyarılar" ekranında değil, doğrudan
@@ -1118,6 +1159,10 @@ async function syncLastMeasAfterDelete(unitId, tagId, point){
   const fieldPath = `lastMeas.${point}`;
   try{
     const snap = await measCol(unitId, tagId).where('point','==',point).get();
+    // Çevrimdışıyken sonuç önbellekten gelir ve ölçümlerin bir kısmını içerebilir;
+    // ondan türetilen özet yanlış olur (boşsa özeti tamamen silerdi). İnternet gelip
+    // bu noktada yeni bir ölçüm/silme yapıldığında özet zaten yeniden hesaplanır.
+    if(snap.metadata.fromCache) return;
     if(snap.empty){
       await tagsCol(unitId).doc(tagId).update({ [fieldPath]: firebase.firestore.FieldValue.delete() });
       return;
@@ -1261,9 +1306,9 @@ function stopQrScan(){
 // yaratmamak için — bilerek istemci tarafında, düz koleksiyon taramasıyla
 // yapılıyor; ünite/tag sayısı bu tür sahne ekipmanı takibi için küçük kalır.)
 async function findTagByQrCode(text){
-  const unitsSnap = await unitsCol().get();
+  const unitsSnap = await fsGet(unitsCol());
   for(const uDoc of unitsSnap.docs){
-    const tagsSnap = await tagsCol(uDoc.id).get();
+    const tagsSnap = await fsGet(tagsCol(uDoc.id));
     for(const tDoc of tagsSnap.docs){
       if(tDoc.data().qrCode === text){
         return { unit: {id:uDoc.id, ...uDoc.data()}, tag: {id:tDoc.id, ...tDoc.data()} };
@@ -1279,8 +1324,8 @@ async function handleQrDecoded(text){
     const parts = text.slice(QR_PREFIX.length).split('|');
     const [unitId, tagId] = parts;
     try{
-      const uDoc = await unitsCol().doc(unitId).get();
-      const tDoc = await tagsCol(unitId).doc(tagId).get();
+      const uDoc = await fsGet(unitsCol().doc(unitId));
+      const tDoc = await fsGet(tagsCol(unitId).doc(tagId));
       if(uDoc.exists && tDoc.exists){
         selUnit = {id:uDoc.id, ...uDoc.data()};
         selTag = {id:tDoc.id, ...tDoc.data()};
@@ -1589,7 +1634,7 @@ function recentFromSummary(summary){
 
 async function backfillLastMeas(unitId, tagId, point){
   try{
-    const snap = await measCol(unitId, tagId).where('point','==',point).get();
+    const snap = await fsGet(measCol(unitId, tagId).where('point','==',point));
     if(snap.empty) return null;
     const docs = snap.docs.slice().sort((a,b)=>{
       const ta = a.data().timestamp ? a.data().timestamp.toMillis() : 0;
@@ -1602,7 +1647,10 @@ async function backfillLastMeas(unitId, tagId, point){
     const summary = { timestamp: latest.timestamp || null, velRMS: latest.velRMS || {}, isoZone: latest.isoZone || {}, rpm: latest.rpm || null,
                       prevVelRMS: prevD ? (prevD.velRMS || null) : null, prevIsoZone: prevD ? (prevD.isoZone || null) : null, recent,
                       count: docs.length, baseline: baselineFromDocs(docs) };
-    tagsCol(unitId).doc(tagId).set({ lastMeas: { [point]: summary } }, {merge:true}).catch(()=>{});
+    // Önbellekten (eksik olabilecek) veriyle türetilen özet ekranda kullanılır ama kaydedilmez.
+    if(!snap.metadata.fromCache){
+      tagsCol(unitId).doc(tagId).set({ lastMeas: { [point]: summary } }, {merge:true}).catch(()=>{});
+    }
     return summary;
   }catch(err){
     return null;
@@ -1611,10 +1659,10 @@ async function backfillLastMeas(unitId, tagId, point){
 
 async function scanAlerts(){
   const results = [];
-  const unitsSnap = await unitsCol().orderBy('order').get();
+  const unitsSnap = await fsGet(unitsCol().orderBy('order'));
   for(const uDoc of unitsSnap.docs){
     const unit = {id: uDoc.id, ...uDoc.data()};
-    const tagsSnap = await tagsCol(unit.id).orderBy('order').get();
+    const tagsSnap = await fsGet(tagsCol(unit.id).orderBy('order'));
     for(const tDoc of tagsSnap.docs){
       const tag = {id: tDoc.id, ...tDoc.data()};
       for(const point of ['on','arka']){
@@ -1650,8 +1698,10 @@ async function scanAlerts(){
   const verified = [];
   for(const r of results){
     if(r.kind === 'zone' || r.kind === 'worsening' || r.kind === 'near'){
-      const check = await measCol(r.unit.id, r.tag.id).where('point','==',r.point).limit(1).get();
-      if(check.empty){
+      const check = await fsGet(measCol(r.unit.id, r.tag.id).where('point','==',r.point).limit(1));
+      // Önbellekten gelen boş sonuç "ölçüm silinmiş" anlamına gelmez (henüz önbelleğe
+      // alınmamış olabilir); bu durumda uyarı korunur, özet onarılmaz.
+      if(check.empty && !check.metadata.fromCache){
         syncLastMeasAfterDelete(r.unit.id, r.tag.id, r.point); // arka planda kendini onarsın, sonucu beklenmiyor
         continue;
       }
@@ -1857,8 +1907,8 @@ async function loadTrend(){
     // tag/nokta kombinasyonu için ayrı bir "composite index" oluşturulmasını
     // istiyor (konsolda manuel onay gerektiriyor). Sıralamayı burada, istemci
     // tarafında (JS içinde) yaparak bu index ihtiyacını tamamen ortadan kaldırıyoruz.
-    const snap = await measCol(selUnit.id, selTag.id)
-      .where('point','==',selPoint).get();
+    const snap = await fsGet(measCol(selUnit.id, selTag.id)
+      .where('point','==',selPoint));
     if(snap.empty){
       content.innerHTML = '<div class="trend-empty">Bu nokta için henüz kayıtlı ölçüm yok.</div>';
       if(trendChart){ trendChart.destroy(); trendChart=null; }
@@ -1953,7 +2003,7 @@ async function loadHistoryList(){
   document.getElementById('historyPsdPanel').style.display = 'none';
   document.getElementById('historyTablePanel').style.display = 'none';
   try{
-    const snap = await measCol(selUnit.id, selTag.id).where('point','==',selPoint).get();
+    const snap = await fsGet(measCol(selUnit.id, selTag.id).where('point','==',selPoint));
     if(snap.empty){
       list.innerHTML = '<div class="trend-empty">Bu nokta için henüz kayıtlı ölçüm yok.</div>';
       historyDocsCache = [];
@@ -6632,7 +6682,7 @@ document.getElementById('btnEditTagFromStatus').addEventListener('click', ()=>{
       ov.style.display = 'none';
       if(out) out.style.display = 'block';
       btn.disabled = false; btn.textContent = 'Giriş Yap'; pass.value = '';
-      if(!started){ started = true; renderSelectView(); refreshAlertBadge(); }
+      if(!started){ started = true; renderSelectView(); warmOfflineCache().finally(refreshAlertBadge); }
     } else {
       ov.style.display = 'flex';
       if(out) out.style.display = 'none';

@@ -2,7 +2,7 @@
 <html lang="tr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>WS300 Titreşim Analiz — Faz 2</title>
 <!-- PWA: telefona "uygulama gibi" (kendi ikonuyla, tam ekran, ana ekrandan) yüklenebilmesi için -->
 <link rel="manifest" href="manifest.json">
@@ -14,14 +14,37 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="WS300">
 <script>
-// Tanı amaçlı: herhangi bir JS hatası olursa devtools'a gerek kalmadan
-// ekranda büyük bir uyarı olarak göster.
-window.addEventListener('error', function(e){
-  alert('JS HATASI: ' + e.message + '\nDosya: ' + e.filename + '\nSatır: ' + e.lineno);
-});
-window.addEventListener('unhandledrejection', function(e){
-  alert('PROMISE HATASI: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
-});
+// Tanı amaçlı: herhangi bir JS hatası olursa devtools'a gerek kalmadan ekranda
+// göster. Eskiden alert() kullanılıyordu; sahada her hatada işi durduran bir
+// pencere açılıyordu. Artık ekranın üstünde kapatılabilir kırmızı bir şerit
+// çıkıyor (aynı hata tekrar ederse sayacı artıyor).
+(function(){
+  let bar = null, count = 0, lastMsg = '';
+  function show(msg){
+    console.error(msg);
+    if(!document.body){ document.addEventListener('DOMContentLoaded', ()=>show(msg), {once:true}); return; }
+    if(!bar){
+      bar = document.createElement('div');
+      bar.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:10000;background:#7a1010;color:#fff;font:12px/1.4 monospace;padding:8px 36px 8px 10px;white-space:pre-wrap;word-break:break-word;max-height:40vh;overflow:auto';
+      const x = document.createElement('button');
+      x.textContent = '✕';
+      x.style.cssText = 'position:absolute;top:4px;right:6px;background:none;border:none;color:#fff;font-size:16px;cursor:pointer';
+      x.onclick = ()=>{ bar.remove(); bar = null; count = 0; lastMsg = ''; };
+      bar.appendChild(x);
+      bar.appendChild(document.createElement('span'));
+      document.body.appendChild(bar);
+    }
+    count = (msg === lastMsg) ? count + 1 : 1;
+    lastMsg = msg;
+    bar.lastChild.textContent = msg + (count > 1 ? ` (×${count})` : '');
+  }
+  window.addEventListener('error', function(e){
+    show('JS HATASI: ' + e.message + '\nDosya: ' + e.filename + '\nSatır: ' + e.lineno);
+  });
+  window.addEventListener('unhandledrejection', function(e){
+    show('PROMISE HATASI: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  });
+})();
 </script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
@@ -48,6 +71,15 @@ const firebaseConfig = {
 };
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
+// ÇEVRİMDIŞI ÇALIŞMA: Firestore'un yerel (IndexedDB) önbelleği. Başka hiçbir
+// Firestore çağrısından ÖNCE açılmalı. Açıkken internet yokken ünite/tag listeleri
+// ve trend önbellekten okunur; ölçüm kayıtları cihazda kuyruğa alınır ve uygulama
+// kapatılsa bile internet geldiğinde otomatik gönderilir.
+db.enablePersistence({ synchronizeTabs: true }).catch(err=>{
+  // failed-precondition: başka sekme kilitli tutuyor; unimplemented: tarayıcı desteklemiyor.
+  // İkisinde de uygulama çalışır, sadece kayıtlar kalıcı kuyruğa alınamaz.
+  console.warn('Firestore çevrimdışı önbellek açılamadı:', err.code || err);
+});
 </script>
 <script>
 /*!
@@ -786,7 +818,9 @@ async function renderSelectView(){
     addBtn.innerHTML = '+ Ünite ekle';
     addBtn.onclick = ()=> openNameModal('Yeni ünite', '', async(name)=>{
       const order = await nextOrder(unitsCol());
-      await unitsCol().add({name, order, createdAt: firebase.firestore.FieldValue.serverTimestamp()});
+      // Beklenmiyor: yazma yerel önbelleğe anında düşer, internet yoksa sonra gönderilir.
+      unitsCol().add({name, order, createdAt: firebase.firestore.FieldValue.serverTimestamp()})
+        .catch(err=> alert('Ünite kaydedilemedi: ' + err.message));
       renderSelectView();
     });
     const snap = await unitsCol().orderBy('order').get();
@@ -816,7 +850,8 @@ async function renderSelectView(){
     addBtn.innerHTML = '+ Tag ekle';
     addBtn.onclick = ()=> openTagModal('Yeni tag', {}, async(data)=>{
       const order = await nextOrder(tagsCol(selUnit.id));
-      await tagsCol(selUnit.id).add({...data, order, createdAt: firebase.firestore.FieldValue.serverTimestamp()});
+      tagsCol(selUnit.id).add({...data, order, createdAt: firebase.firestore.FieldValue.serverTimestamp()})
+        .catch(err=> alert('Tag kaydedilemedi: ' + err.message));
       renderSelectView();
     });
     const snap = await tagsCol(selUnit.id).orderBy('order').get();
@@ -957,7 +992,7 @@ function openTagModal(title, initial, onSave){
     const shortCode = pendingQrCode.length > 40 ? pendingQrCode.slice(0,40)+'…' : pendingQrCode;
     qrLinkBox.innerHTML = `<label style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text-dim); cursor:pointer;">
       <input type="checkbox" id="tagModalQrLinkCheck" checked style="flex:none;">
-      <span>Taranan QR kodu ("${shortCode}") bu tag'e bağlansın</span>
+      <span>Taranan QR kodu ("${escapeHtml(shortCode)}") bu tag'e bağlansın</span>
     </label>`;
   } else {
     qrLinkBox.style.display = 'none';
@@ -986,7 +1021,26 @@ function openTagModal(title, initial, onSave){
   document.getElementById('tagModalName').focus();
 }
 
+// Kullanıcının girdiği metinler (ünite/tag adı, rulman kodu…) innerHTML'e ya da
+// rapor HTML'ine yazılmadan önce bundan geçirilmeli. Veritabanı ortak olduğu için
+// adında HTML/JS bulunan bir kayıt, onu açan herkesin tarayıcısında kod çalıştırırdı.
+function escapeHtml(v){
+  return String(v == null ? '' : v)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 // ---- ISO 10816 sınıf ve değerlendirme ----
+// Rapor ve analiz ekranında değerlendirmenin dayanağı (hangi standart, hangi bant).
+const ISO_BASIS_TEXT = 'Değerlendirme: ISO 10816-1 Ek B genel sınıf sınırları, 10–1000 Hz hız RMS. ISO 10816 serisinin yerini ISO 20816 almıştır; sınırlar genel kılavuz niteliğindedir.';
+// 600 rpm altında 1× devir frekansı 10 Hz'in altına düşer ve 10–1000 Hz bandına
+// girmez; standart bu makineler için 2–1000 Hz öngörür. Bant bilerek değiştirilmiyor
+// (≈2 sn'lik kayıtta ivmeden hıza çevirirken 10 Hz altı gürültü büyür), uyarı veriliyor.
+function isoLowSpeedNote(rpm){
+  const r = parseFloat(rpm);
+  if(!(r > 0) || r >= 600) return '';
+  return `Devir ${Math.round(r)} rpm (600 rpm altı): 1× devir frekansı ${(r/60).toFixed(1)} Hz, ölçüm bandının (10–1000 Hz) altında kalıyor. Standart bu makineler için 2–1000 Hz öngörür; gösterilen RMS ve bölge olduğundan düşük olabilir.`;
+}
 function isoClass(kw, foundation){
   if(!kw) return null;
   if(kw <= 15) return 'I';
@@ -1009,17 +1063,18 @@ function isoEvaluate(rmsVelocity, cls){
   return {zone:'D', label:'Tehlikeli', color:'#ff5d5d'};
 }
 
-// ISO 10816-3'ün standart metnine dayalı, her bölge için uzun açıklama.
+// ISO 10816 bölge tanımlarına dayalı, her bölge için uzun açıklama.
 const ISO_ZONE_DESCRIPTIONS = {
   A: 'Yeni devreye alınmış bir makineden beklenen tipik titreşim seviyesi. Herhangi bir aksiyon gerekmez, mevcut durumda çalışmaya devam edilebilir.',
   B: 'Titreşim seviyesi, makinenin sınırsız süreyle uzun vadeli çalışması için genellikle kabul edilebilir kabul edilir. Rutin izlemeye devam edilmesi yeterlidir.',
   C: 'Titreşim seviyesi, uzun süreli sürekli çalışma için normalde tatmin edici değildir. Makine, uygun bir bakım fırsatı bulunana kadar sınırlı bir süre bu durumda çalıştırılabilir; kök nedenin (dengesizlik, hizasızlık, rulman/yatak aşınması vb.) araştırılması önerilir.',
   D: 'Titreşim seviyesi, makinede hasara yol açacak kadar şiddetli kabul edilir. Mümkün olan en kısa sürede inceleme ve düzeltici bakım yapılması gerekir.'
 };
-// Sınıf açıklamaları (ISO 10816-3'e göre makine grupları)
+// Sınıf açıklamaları. ISO_ZONES sınırları ISO 10816-1 Ek B'deki genel sınıf
+// tablosudur (I–IV); 10816-3'ün kendi grup/temel tablosu farklıdır.
 const ISO_CLASS_LABELS = {
   I:   'Sınıf I — Küçük makineler (≤15 kW)',
-  II:  'Sınıf II — Orta boy makineler (15-75 kW), rijit temel',
+  II:  'Sınıf II — Orta boy makineler (15-75 kW)',
   III: 'Sınıf III — Büyük makineler (>75 kW), rijit temel',
   IV:  'Sınıf IV — Büyük makineler (>75 kW), esnek temel'
 };
@@ -1150,8 +1205,8 @@ function printQrLabel(){
   const wrap = document.getElementById('qrShowCanvasWrap');
   const area = document.getElementById('qrPrintArea');
   area.innerHTML = `
-    <div style="font-size:20px; font-weight:bold; margin-bottom:4px;">${selTag.name}</div>
-    <div style="font-size:13px; color:#555; margin-bottom:16px;">${selUnit.name}</div>
+    <div style="font-size:20px; font-weight:bold; margin-bottom:4px;">${escapeHtml(selTag.name)}</div>
+    <div style="font-size:13px; color:#555; margin-bottom:16px;">${escapeHtml(selUnit.name)}</div>
     <div>${wrap.innerHTML}</div>
     <div style="font-size:11px; color:#777; margin-top:12px;">WS300 Titreşim Analiz — bu etiketi tarayarak doğrudan bu tag'in ölçüm ekranına gidin</div>`;
   window.print();
@@ -1327,15 +1382,18 @@ function downsampleSpectrum(freqs, values, targetPoints, fLow, fHigh, mode){
   return {f, v};
 }
 
-async function saveMeasurementToFirestore(){
+async function saveMeasurementToFirestore(qualityIssues){
   if(!selUnit || !selTag || !selPoint) return;
   const rpmVal = parseFloat(document.getElementById('rpmInput').value) || null;
   const cls = isoClass(selTag.kw, selTag.foundation);
+  const measTs = firebase.firestore.Timestamp.now();
   const doc = {
     point: selPoint,
     rpm: rpmVal,
     isoClass: cls,
-    timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+    // Ölçümün ALINDIĞI an (telefon saati). serverTimestamp() kullanılmıyor: çevrimdışı
+    // alınan bir ölçüm ertesi gün gönderilirse gönderildiği günün tarihini alırdı.
+    timestamp: measTs,
     sampleRate: SAMPLE_RATE_HZ, // bu alan olmayan kayıtlar eski (12800 Hz varsayımlı, frekansları 2 kat hatalı) ölçümlerdir
     velRMS: {},
     isoZone: {},
@@ -1361,9 +1419,15 @@ async function saveMeasurementToFirestore(){
   }
   const shaftEst = liveShaftHz(rpmVal);
   if(shaftEst) doc.shaftHz = Math.round(shaftEst*100)/100;
+  // Kalite şüpheli olduğu bilinerek kaydedilen ölçümler not alanında işaretlenir.
+  if(qualityIssues && qualityIssues.length) doc.note = 'Kalite uyarısı: ' + qualityIssues.join('; ');
   try{
-    await measCol(selUnit.id, selTag.id).add(doc);
-    log('Ölçüm Firestore kaydı yapıldı ('+(selPoint==='on'?'Ön':'Arka')+').');
+    // Yazmaları BEKLEMİYORUZ: Firestore'un set() sözü ancak sunucu onaylayınca
+    // tamamlanır; internet yokken hiç tamamlanmaz ve "Ölçüm Al" düğmesi kilitli
+    // kalırdı. Yazma yerel önbelleğe anında uygulanır (ekranlar hemen günceller),
+    // sunucuya gönderim arka planda, internet geldiğinde olur.
+    const pointLabel = selPoint==='on'?'Ön':'Arka';
+    const measWrite = measCol(selUnit.id, selTag.id).doc().set(doc);
     // Uyarılar ekranı her tag için 100'lerce ölçüm dokümanını (spektrum
     // verisiyle birlikte) taramak zorunda kalmasın diye, tag dokümanının
     // üzerine bu noktanın son ölçüm özetini (rulman verisi olmadan, küçük)
@@ -1385,10 +1449,10 @@ async function saveMeasurementToFirestore(){
       newBaseline = {};
       ['X','Y','Z'].forEach(ax=>{ newBaseline[ax] = medianOfNums(first.map(r=>r.velRMS[ax])); });
     }
-    await tagsCol(selUnit.id).doc(selTag.id).set({
+    const summaryWrite = tagsCol(selUnit.id).doc(selTag.id).set({
       lastMeas: {
         [selPoint]: {
-          timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+          timestamp: measTs,
           velRMS: doc.velRMS,
           isoZone: doc.isoZone,
           rpm: rpmVal,
@@ -1400,12 +1464,18 @@ async function saveMeasurementToFirestore(){
         }
       }
     }, {merge:true});
+    log(navigator.onLine
+      ? 'Ölçüm kaydedildi ('+pointLabel+'), sunucuya gönderiliyor…'
+      : 'Ölçüm cihaza kaydedildi ('+pointLabel+') — internet yok, bağlantı gelince otomatik gönderilecek.', navigator.onLine ? '' : 'warn');
+    Promise.all([measWrite, summaryWrite])
+      .then(()=> log('Ölçüm sunucuya gönderildi ('+pointLabel+').'))
+      .catch(err=> log('Firestore kayıt hatası: ' + err.message, 'err'));
     // selTag'i de güncel tut — aynı ekranda art arda ölçüm alınırsa bir
     // sonraki save'in prevSummary'si doğru (bir önceki, bayat değil) olsun.
     selTag.lastMeas = selTag.lastMeas || {};
-    selTag.lastMeas[selPoint] = { timestamp:null, velRMS:doc.velRMS, isoZone:doc.isoZone, rpm:rpmVal, prevVelRMS: prevSummary?(prevSummary.velRMS||null):null, prevIsoZone: prevSummary?(prevSummary.isoZone||null):null, recent: newRecent, baseline: newBaseline, count: seenCount };
-    await loadTrend();
-    renderScreeningNote();
+    selTag.lastMeas[selPoint] = { timestamp:measTs, velRMS:doc.velRMS, isoZone:doc.isoZone, rpm:rpmVal, prevVelRMS: prevSummary?(prevSummary.velRMS||null):null, prevIsoZone: prevSummary?(prevSummary.isoZone||null):null, recent: newRecent, baseline: newBaseline, count: seenCount };
+    // Trend okuması zayıf bağlantıda saniyelerce sürebilir; ölçüm akışını bekletmesin.
+    loadTrend().finally(renderScreeningNote);
     refreshAlertBadge(); // arka planda, sonucu beklemeden — buton sayısını günceller
   }catch(err){
     log('Firestore kayıt hatası: ' + err.message, 'err');
@@ -1738,7 +1808,7 @@ function renderAlertsView(){
         <div class="alert-row" data-idx="${alertScanResults.indexOf(r)}">
           <div class="ar-top">
             <div>
-              <div class="ar-name">${r.unit.name} › ${r.tag.name}</div>
+              <div class="ar-name">${escapeHtml(r.unit.name)} › ${escapeHtml(r.tag.name)}</div>
               <div class="ar-sub">${r.pointLabel} · ${sub}</div>
             </div>
             <div class="ar-badge" style="background:#7c8a8022; color:var(--text-dim); border:1px solid var(--line);">${r.kind==='none' ? 'Hiç ölçülmedi' : r.daysSince+' gün'}</div>
@@ -2221,7 +2291,7 @@ function buildComparisonReportHtml(axesSeries, trend, summaryRows, bearing, char
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WS300 Karşılaştırma — ${selTag ? selTag.name : ''}</title>
+<title>WS300 Karşılaştırma — ${selTag ? escapeHtml(selTag.name) : ''}</title>
 <style>
   body{ font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif; background:#f4f4f4; color:#222; margin:0; padding:16px; }
   .wrap{ max-width:900px; margin:0 auto; background:#fff; border-radius:8px; padding:20px; box-shadow:0 1px 4px rgba(0,0,0,.08); }
@@ -3021,14 +3091,17 @@ async function connectDevice(){
     setStatus('Bağlanıyor…', 'busy');
     server = await device.gatt.connect();
     log('GATT bağlantısı kuruldu.');
-
-    setStatus(`Bağlı: ${device.name || 'WS300'}`, 'on');
-    document.getElementById('btnMeasure').disabled = false;
-    document.getElementById('btnConnect').textContent = 'Yeniden Bağlan';
+    setConnectedUi();
   }catch(err){
     log('Bağlantı hatası: ' + err.message, 'err');
     setStatus('Bağlantı başarısız', 'err');
   }
+}
+
+function setConnectedUi(){
+  setStatus(`Bağlı: ${device.name || 'WS300'}`, 'on');
+  document.getElementById('btnMeasure').disabled = measuring;
+  document.getElementById('btnConnect').textContent = 'Yeniden Bağlan';
 }
 
 function onDisconnected(){
@@ -3036,6 +3109,37 @@ function onDisconnected(){
   setStatus('Bağlantı koptu', 'err');
   document.getElementById('btnMeasure').disabled = true;
   activeNotifyChars = []; // bağlantı koptuğunda eski karakteristik referansları geçersiz
+  // Ölçüm sürüyorsa 15 sn zaman aşımını beklemeden hemen bitir.
+  if(abortMeasurement) abortMeasurement(new Error('Ölçüm sırasında cihaz bağlantısı koptu'));
+  autoReconnect();
+}
+
+// Bağlantı koptuğunda (sensör menzil sınırında, kısa parazit vb.) cihaz seçme
+// penceresini açmadan aynı sensöre birkaç kez kendiliğinden yeniden bağlanmayı dener.
+const RECONNECT_DELAYS_MS = [1000, 2000, 4000];
+let reconnecting = false;
+async function autoReconnect(){
+  const dev = device;
+  if(reconnecting || !dev) return;
+  reconnecting = true;
+  try{
+    for(let i=0; i<RECONNECT_DELAYS_MS.length; i++){
+      await new Promise(r=>setTimeout(r, RECONNECT_DELAYS_MS[i]));
+      if(device !== dev || dev.gatt.connected) return; // kullanıcı bu arada elle bağlandı
+      setStatus(`Yeniden bağlanılıyor… (${i+1}/${RECONNECT_DELAYS_MS.length})`, 'busy');
+      try{
+        server = await dev.gatt.connect();
+        log('Bağlantı yeniden kuruldu.');
+        setConnectedUi();
+        return;
+      }catch(err){
+        log(`Yeniden bağlanma denemesi ${i+1} başarısız: ${err.message}`, 'warn');
+      }
+    }
+    setStatus('Bağlantı koptu — "Yeniden Bağlan" ile tekrar deneyin', 'err');
+  }finally{
+    reconnecting = false;
+  }
 }
 
 // ============================================================
@@ -3064,6 +3168,10 @@ async function cleanupNotifications(){
 // ============================================================
 async function runMeasurement(){
   if(measuring) return;
+  if(!server || !server.connected){
+    log('Cihaz bağlı değil — önce "Cihaza Bağlan".', 'err');
+    return;
+  }
   measuring = true;
   document.getElementById('btnMeasure').disabled = true;
   document.getElementById('btnExport').disabled = true;
@@ -3118,20 +3226,36 @@ async function runMeasurement(){
 
     setStatus('Veri işleniyor…', 'busy');
     processAxisData();
+    const qualityIssues = assessSignalQuality();
     computeResults();
     document.getElementById('btnExport').disabled = false;
     document.getElementById('btnPdf').disabled = false;
     document.getElementById('btnHtmlReport').disabled = false;
-    setStatus(`Bağlı: ${device.name || 'WS300'} — ölçüm tamam`, 'on');
-    log('Ölçüm tamamlandı.');
-    await saveMeasurementToFirestore();
+    if(qualityIssues.length){
+      qualityIssues.forEach(q=> log('Kalite uyarısı — ' + q, 'err'));
+      setStatus(`Bağlı: ${device.name || 'WS300'} — ölçüm kalitesi şüpheli`, 'err');
+      // Sonuçlar ekranda; kayda girip girmeyeceğine sahada bakan kişi karar versin
+      // (ör. gerçekten duran bir makinede "sinyal yok" beklenen bir durumdur).
+      const save = confirm('Ölçüm kalitesi şüpheli:\n\n• ' + qualityIssues.join('\n• ') +
+        '\n\nTamam: yine de kaydet (kalite notuyla)\nİptal: kaydetme, ölçümü tekrarla');
+      if(save){
+        await saveMeasurementToFirestore(qualityIssues);
+      } else {
+        log('Ölçüm kaydedilmedi (kalite şüpheli). Sonuçlar ekranda inceleme için duruyor.', 'warn');
+      }
+    } else {
+      setStatus(`Bağlı: ${device.name || 'WS300'} — ölçüm tamam`, 'on');
+      log('Ölçüm tamamlandı.');
+      await saveMeasurementToFirestore();
+    }
   }catch(err){
     log('Ölçüm hatası: ' + err.message, 'err');
     setStatus('Ölçüm başarısız', 'err');
     await cleanupNotifications(); // başarısız denemeden kalan dinleyicileri de temizle
   }finally{
     measuring = false;
-    document.getElementById('btnMeasure').disabled = false;
+    // Bağlantı koptuysa düğme kapalı kalsın; yeniden bağlanınca setConnectedUi() açar.
+    document.getElementById('btnMeasure').disabled = !(server && server.connected);
     setProgress(null);
   }
 }
@@ -3174,6 +3298,13 @@ function onNotify(event){
     const seq = dv.getUint16(0, true); // ilk 2 byte little-endian = sıra no
     // dv.buffer, tarayıcı tarafından bir sonraki bildirimde yeniden kullanılabilir;
     // referans yerine kopya alıyoruz (slice) ki veri bozulmasın.
+    // Aynı sıra numarası ikinci kez gelirse (BLE tekrar gönderimi) yok say: aksi
+    // halde paket sayısı şişer, eksik bir ölçüm "tamamlandı" sanılabilir ve
+    // birleştirilen sinyalde aynı parça iki kez yer alırdı.
+    if(axisBuffers[info.axis].some(p=>p.seq===seq)){
+      log(`${info.axis} tekrar eden paket yok sayıldı (sıra ${seq})`, 'warn');
+      return;
+    }
     const bytes = new Uint8Array(dv.buffer.slice(dv.byteOffset+2, dv.byteOffset+dv.byteLength));
     axisBuffers[info.axis].push({seq, bytes});
     lastPacketTime[info.axis] = Date.now(); // tamamlanma kontrolü için: son gerçek paketin ne zaman geldiği
@@ -3194,10 +3325,12 @@ function updateProgressFromBuffers(){
 // QUIET_MS boyunca o eksene yeni paket gelmediğini doğruluyoruz — hâlâ paket
 // geliyorsa, count'un düşük olduğu anlaşılır ve beklemeye devam edilir.
 const QUIET_MS = 250;
+let abortMeasurement = null; // ölçüm beklenirken bağlantı koparsa onDisconnected() çağırır
 
 function waitForCompletion(timeoutMs){
   return new Promise((resolve, reject)=>{
     const start = Date.now();
+    abortMeasurement = (err)=>{ clearInterval(iv); abortMeasurement = null; reject(err); };
     const iv = setInterval(()=>{
       const now = Date.now();
       const done = ['X','Y','Z'].every(ax=>{
@@ -3205,9 +3338,10 @@ function waitForCompletion(timeoutMs){
         if(exp === null || axisBuffers[ax].length < exp+1) return false;
         return (now - lastPacketTime[ax]) >= QUIET_MS;
       });
-      if(done){ clearInterval(iv); resolve(); return; }
+      if(done){ clearInterval(iv); abortMeasurement = null; resolve(); return; }
       if(Date.now()-start > timeoutMs){
         clearInterval(iv);
+        abortMeasurement = null;
         reject(new Error('Zaman aşımı — tüm eksenler tamamlanmadı ('+
           ['X','Y','Z'].map(ax=>`${ax}:${axisBuffers[ax].length}/${axisExpectedCount[ax]!==null?axisExpectedCount[ax]+1:'?'}`).join(', ')+')'));
       }
@@ -3215,7 +3349,29 @@ function waitForCompletion(timeoutMs){
   });
 }
 
+// Sıra numaralarında boşluk varsa (BLE'de kaybolan paket) birleştirilen zaman
+// sinyalinde fark edilmeyen bir atlama oluşur; FFT/RMS/zarf sonuçları sessizce
+// bozulur ve bu ölçüm trende normal bir ölçüm gibi girerdi. Böyle bir ölçümü
+// işlemek/kaydetmek yerine reddedip tekrarlanmasını istiyoruz.
+function findSeqGaps(sortedPackets){
+  const missing = [];
+  for(let i=1; i<sortedPackets.length; i++){
+    for(let s=sortedPackets[i-1].seq+1; s<sortedPackets[i].seq; s++) missing.push(s);
+  }
+  return missing;
+}
+
 function processAxisData(){
+  const lossMsgs = [];
+  for(const ax of ['X','Y','Z']){
+    const missing = findSeqGaps(axisBuffers[ax].slice().sort((a,b)=>a.seq-b.seq));
+    if(missing.length){
+      lossMsgs.push(`${ax}: ${missing.length} paket eksik (sıra ${missing.slice(0,5).join(', ')}${missing.length>5?'…':''})`);
+    }
+  }
+  if(lossMsgs.length){
+    throw new Error('Paket kaybı — ' + lossMsgs.join('; ') + '. Ölçüm kaydedilmedi, lütfen tekrarlayın.');
+  }
   for(const ax of ['X','Y','Z']){
     const packets = axisBuffers[ax].slice().sort((a,b)=>a.seq-b.seq);
     let totalBytes = 0;
@@ -3234,6 +3390,67 @@ function processAxisData(){
     axisSamples[ax] = g;
     log(`${ax}: ${packets.length} paket birleştirildi → ${n} örnek`);
   }
+}
+
+// ============================================================
+// ÖLÇÜM KALİTESİ KONTROLÜ
+// Kötü bir ölçüm (sensör doygun, mıknatıs oturmamış, veri takılmış…) spektrum ve
+// RMS'i bozar; kaydedilirse trende ve uyarılara normal bir ölçüm gibi girer. Bu
+// kontroller ham örnekler üzerinde çalışır ve bulguları kısa Türkçe cümleler
+// olarak döndürür (boş dizi = sorun yok).
+// Ölçek 0.0006104 g/bit ≈ 20 g / 32768: sensörün tam ölçeği int16 aralığının
+// tamamı (±20 g). Bu yüzden doygunluk, örneğin bu sınıra dayanmasıyla kesin
+// olarak anlaşılır (sinüs ağırlıklı sağlam sinyallerde yanlış alarm vermez).
+// ============================================================
+const Q_CLIP_LSB = 32760;        // |ham| bu değere ulaşırsa sensör sınırında
+const Q_CLIP_MIN_COUNT = 3;      // bu kadar örnek sınırdaysa doygunluk
+const Q_FLAT_STD_LSB = 1.5;      // AC standart sapma bunun altındaysa "sinyal yok"
+const Q_STUCK_RUN = 64;          // ≈10 ms boyunca aynı ham değer → veri takılması
+const Q_SPIKE_LSB = 16000;       // tek örneklik, iki yöne birden bu kadar sıçrama → bozuk örnek
+const Q_LEN_MISMATCH = 0.05;     // eksenler arası örnek sayısı farkı oranı
+
+function assessSignalQuality(){
+  const issues = [];
+  const lens = [];
+  for(const ax of ['X','Y','Z']){
+    const g = axisSamples[ax];
+    if(!g || !g.length){ issues.push(`${ax}: veri yok`); continue; }
+    const n = g.length;
+    lens.push(n);
+    const raw = new Int32Array(n);
+    let mean = 0;
+    for(let i=0;i<n;i++){ raw[i] = Math.round(g[i]/SCALE_G_PER_LSB); mean += raw[i]; }
+    mean /= n;
+    let varSum = 0, clip = 0, run = 1, maxRun = 1, spikes = 0;
+    for(let i=0;i<n;i++){
+      const d = raw[i]-mean; varSum += d*d;
+      if(Math.abs(raw[i]) >= Q_CLIP_LSB) clip++;
+      if(i>0){ if(raw[i]===raw[i-1]){ run++; if(run>maxRun) maxRun = run; } else run = 1; }
+      if(i>0 && i<n-1){
+        const a = raw[i]-raw[i-1], b = raw[i]-raw[i+1];
+        if(Math.abs(a) > Q_SPIKE_LSB && Math.abs(b) > Q_SPIKE_LSB && Math.sign(a) === Math.sign(b)) spikes++;
+      }
+    }
+    const std = Math.sqrt(varSum/n);
+    if(clip >= Q_CLIP_MIN_COUNT){
+      issues.push(`${ax}: sensör doygun (${clip} örnek ±20 g sınırında) — titreşim ölçüm aralığını aşıyor, değerler olduğundan düşük çıkar`);
+    }
+    if(std < Q_FLAT_STD_LSB){
+      issues.push(`${ax}: sinyal yok denecek kadar düşük (${(std*SCALE_G_PER_LSB*1000).toFixed(2)} mg) — makine çalışıyor mu, sensör yerine oturdu mu?`);
+    } else if(maxRun >= Q_STUCK_RUN){
+      issues.push(`${ax}: veri takılması (${maxRun} örnek ≈ ${(maxRun/SAMPLE_RATE_HZ*1000).toFixed(0)} ms boyunca aynı değer)`);
+    }
+    if(spikes){
+      issues.push(`${ax}: ${spikes} bozuk örnek (tek örneklik ani sıçrama) — aktarım hatası olabilir`);
+    }
+  }
+  if(lens.length > 1){
+    const mx = Math.max(...lens), mn = Math.min(...lens);
+    if(mx > 0 && (mx-mn)/mx > Q_LEN_MISMATCH){
+      issues.push(`Eksenlerin örnek sayıları farklı (${mn}–${mx}) — veri eksik aktarılmış olabilir`);
+    }
+  }
+  return issues;
 }
 
 // ============================================================
@@ -3647,7 +3864,7 @@ function renderScreeningNote(){
     (needRepeat ? '<div style="margin-top:6px; color:'+col+';"><b>Teyit için sensörü yerinden oynatmadan bu noktayı bir kez daha ölçün.</b> Tek ölçümlük sapmalar ardışık ölçümlerde doğal olarak %30-50 oynayabilir.</div>' : '');
 }
 
-// Bir eksen için ISO 10816-3'e göre uzun-form analiz metni (HTML) üretir:
+// Bir eksen için ISO 10816'ya göre uzun-form analiz metni (HTML) üretir:
 // sınıf, ulaşılan bölge, o sınıfın bölge sınırları ve bölgenin standart
 // açıklaması. selTag'de kW/temel tipi tanımlı değilse uyarı metni döner.
 function buildIsoAnalysisHtml(ax){
@@ -3672,7 +3889,9 @@ function buildIsoAnalysisHtml(ax){
     <div style="margin-bottom:12px;">${ISO_ZONE_DESCRIPTIONS[v.zone]}</div>
     <div style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text-dim); border-top:1px solid var(--line); padding-top:8px;">
       Sınıf ${cls} bölge sınırları (mm/s RMS): A≤${ab} · B≤${bc} · C≤${cd} · D&gt;${cd}
-    </div>`;
+    </div>
+    ${(()=>{ const n = isoLowSpeedNote(document.getElementById('rpmInput').value); return n ? `<div style="margin-top:8px; font-size:11.5px; color:var(--amber);">⚠ ${n}</div>` : ''; })()}
+    <div style="margin-top:8px; font-size:10.5px; color:var(--text-dim);">${ISO_BASIS_TEXT}</div>`;
 }
 
 // ============================================================
@@ -4501,7 +4720,7 @@ function buildBearingAnalysisHtml(code, rpm, freqs){
     return '<div style="color:var(--text-dim)">RPM değeri girilmemiş — rulman arıza frekansları hesaplanamıyor. Ölçüm öncesi RPM alanını doldurun.</div>';
   }
   if(!freqs){
-    return `<div style="color:var(--text-dim)">"${code}" rulman kodu tanınmıyor — arıza frekansı hesaplanamadı.</div>`;
+    return `<div style="color:var(--text-dim)">"${escapeHtml(code)}" rulman kodu tanınmıyor — arıza frekansı hesaplanamadı.</div>`;
   }
   const rows = Object.keys(freqs).map(key=>{
     const label = { BPFO:'BPFO — Dış bilezik top geçiş frekansı', BPFI:'BPFI — İç bilezik top geçiş frekansı', BSF:'BSF — Top dönüş frekansı', FTF:'FTF — Kafes temel frekansı' }[key];
@@ -4513,7 +4732,7 @@ function buildBearingAnalysisHtml(code, rpm, freqs){
     </label>`;
   }).join('');
   return `
-    <div style="font-size:11px; color:var(--text-dim); margin-bottom:8px;">Rulman: ${code} · RPM: ${rpm} · Mil frekansı: ${(rpm/60).toFixed(2)} Hz</div>
+    <div style="font-size:11px; color:var(--text-dim); margin-bottom:8px;">Rulman: ${escapeHtml(code)} · RPM: ${escapeHtml(rpm)} · Mil frekansı: ${(rpm/60).toFixed(2)} Hz</div>
     <div style="font-size:13px;">${rows}</div>
     <div style="font-size:11px; color:var(--text-dim); margin-top:8px;">Çizgileri PSD ve Zarf grafiklerinin hemen üstündeki düğmelerle, her grafikte ayrı ayrı açıp kapatabilirsiniz.</div>`;
 }
@@ -5052,7 +5271,7 @@ function buildBearingAnalysisPrintHtml(code, rpm, freqs){
     return '<div style="font-size:12px; color:#888;">RPM değeri girilmemiş — rulman arıza frekansları hesaplanamadı.</div>';
   }
   if(!freqs){
-    return `<div style="font-size:12px; color:#888;">"${code}" rulman kodu tanınmıyor — arıza frekansı hesaplanamadı.</div>`;
+    return `<div style="font-size:12px; color:#888;">"${escapeHtml(code)}" rulman kodu tanınmıyor — arıza frekansı hesaplanamadı.</div>`;
   }
   const labelMap = { BPFO:'BPFO — Dış bilezik top geçiş frekansı', BPFI:'BPFI — İç bilezik top geçiş frekansı', BSF:'BSF — Top dönüş frekansı', FTF:'FTF — Kafes temel frekansı' };
   const rows = Object.keys(freqs).map(key=>`
@@ -5061,7 +5280,7 @@ function buildBearingAnalysisPrintHtml(code, rpm, freqs){
       <td style="padding:5px 8px; border:1px solid #ccc; font-family:'JetBrains Mono',monospace;">${freqs[key].toFixed(2)} Hz</td>
     </tr>`).join('');
   return `
-    <div style="font-size:12px; color:#555; margin-bottom:6px;">Rulman: ${code} · RPM: ${rpm} · Mil frekansı: ${(rpm/60).toFixed(2)} Hz</div>
+    <div style="font-size:12px; color:#555; margin-bottom:6px;">Rulman: ${escapeHtml(code)} · RPM: ${escapeHtml(rpm)} · Mil frekansı: ${(rpm/60).toFixed(2)} Hz</div>
     <table style="width:100%; border-collapse:collapse; font-size:12.5px;">${rows}</table>`;
 }
 
@@ -5333,7 +5552,8 @@ function buildIsoSectionData(meta){
   }
   const boundariesTxt = cls ? (()=>{
     const [ab,bc,cd] = ISO_ZONES[cls];
-    return `${ISO_CLASS_LABELS[cls]} — Bölge sınırları (mm/s RMS): A≤${ab} · B≤${bc} · C≤${cd} · D>${cd}`;
+    const low = isoLowSpeedNote(meta.rpm);
+    return `${ISO_CLASS_LABELS[cls]} — Bölge sınırları (mm/s RMS): A≤${ab} · B≤${bc} · C≤${cd} · D>${cd}<br>${ISO_BASIS_TEXT}` + (low ? `<br>⚠ ${low}` : '');
   })() : 'Bu tag için motor gücü (kW) tanımlanmadığından ISO sınıfı belirlenemedi.';
   return { rowsHtml, boundariesTxt };
 }
@@ -5344,11 +5564,11 @@ function buildReportHeaderTableHtml(meta){
     <table style="width:100%; border-collapse:collapse; margin-bottom:16px; font-size:13px;">
       <tr>
         <td style="padding:6px; font-weight:bold; width:140px;">Ünite</td>
-        <td style="padding:6px;">${selUnit ? selUnit.name : '—'}</td>
+        <td style="padding:6px;">${selUnit ? escapeHtml(selUnit.name) : '—'}</td>
       </tr>
       <tr>
         <td style="padding:6px; font-weight:bold;">Tag</td>
-        <td style="padding:6px;">${selTag ? selTag.name : '—'}</td>
+        <td style="padding:6px;">${selTag ? escapeHtml(selTag.name) : '—'}</td>
       </tr>
       <tr>
         <td style="padding:6px; font-weight:bold;">Ölçüm Noktası</td>
@@ -5356,7 +5576,7 @@ function buildReportHeaderTableHtml(meta){
       </tr>
       <tr>
         <td style="padding:6px; font-weight:bold;">RPM</td>
-        <td style="padding:6px;">${meta.rpm || '—'}</td>
+        <td style="padding:6px;">${escapeHtml(meta.rpm || '—')}</td>
       </tr>
     </table>`;
 }
@@ -5642,7 +5862,7 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WS300 Rapor — ${selTag ? selTag.name : ''}</title>
+<title>WS300 Rapor — ${selTag ? escapeHtml(selTag.name) : ''}</title>
 <style>
   body{ font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif; background:#f4f4f4; color:#222; margin:0; padding:16px; }
   .wrap{ max-width:900px; margin:0 auto; background:#fff; border-radius:8px; padding:20px; box-shadow:0 1px 4px rgba(0,0,0,.08); }
@@ -6368,11 +6588,11 @@ document.getElementById('btnEditTagFromStatus').addEventListener('click', ()=>{
   ov.style.cssText = 'display:none;position:fixed;inset:0;z-index:9999;background:var(--bg);align-items:center;justify-content:center;flex-direction:column;gap:18px;padding:28px';
   ov.innerHTML =
     '<div style="font-family:monospace;font-size:24px;font-weight:700;letter-spacing:3px;color:var(--phosphor)">WS300</div>'+
-    '<div style="font-size:12px;color:var(--text-dim)">Devam etmek icin giris yapin</div>'+
+    '<div style="font-size:12px;color:var(--text-dim)">Devam etmek için giriş yapın</div>'+
     '<div style="width:100%;max-width:320px;display:flex;flex-direction:column;gap:10px">'+
       '<input id="loginEmail" type="email" autocomplete="username" placeholder="E-posta" style="padding:12px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--text);font-size:15px">'+
-      '<input id="loginPass" type="password" autocomplete="current-password" placeholder="Sifre" style="padding:12px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--text);font-size:15px">'+
-      '<button id="loginBtn" style="padding:12px;border-radius:6px;border:none;background:var(--phosphor);color:#06120b;font-weight:700;font-size:15px;cursor:pointer">Giris Yap</button>'+
+      '<input id="loginPass" type="password" autocomplete="current-password" placeholder="Şifre" style="padding:12px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--text);font-size:15px">'+
+      '<button id="loginBtn" style="padding:12px;border-radius:6px;border:none;background:var(--phosphor);color:#06120b;font-weight:700;font-size:15px;cursor:pointer">Giriş Yap</button>'+
       '<div id="loginErr" style="min-height:18px;font-size:12px;color:var(--red);text-align:center"></div>'+
     '</div>';
   document.body.appendChild(ov);
@@ -6380,14 +6600,14 @@ document.getElementById('btnEditTagFromStatus').addEventListener('click', ()=>{
         btn = ov.querySelector('#loginBtn'), err = ov.querySelector('#loginErr');
   function doLogin(){
     err.textContent = '';
-    if(!email.value.trim() || !pass.value){ err.textContent = 'E-posta ve sifre girin'; return; }
-    btn.disabled = true; btn.textContent = 'Giris yapiliyor...';
+    if(!email.value.trim() || !pass.value){ err.textContent = 'E-posta ve şifre girin'; return; }
+    btn.disabled = true; btn.textContent = 'Giriş yapılıyor...';
     firebase.auth().signInWithEmailAndPassword(email.value.trim(), pass.value).catch(e=>{
       const c = e && e.code || '';
-      err.textContent = c==='auth/network-request-failed' ? 'Internet baglantisi yok'
-        : c==='auth/too-many-requests' ? 'Cok fazla deneme, biraz sonra tekrar deneyin'
-        : 'Giris basarisiz: e-posta veya sifre hatali';
-      btn.disabled = false; btn.textContent = 'Giris Yap';
+      err.textContent = c==='auth/network-request-failed' ? 'İnternet bağlantısı yok'
+        : c==='auth/too-many-requests' ? 'Çok fazla deneme, biraz sonra tekrar deneyin'
+        : 'Giriş başarısız: e-posta veya şifre hatalı';
+      btn.disabled = false; btn.textContent = 'Giriş Yap';
     });
   }
   btn.addEventListener('click', doLogin);
@@ -6398,9 +6618,9 @@ document.getElementById('btnEditTagFromStatus').addEventListener('click', ()=>{
   const hdr = document.querySelector('header');
   if(hdr){
     const out = document.createElement('button');
-    out.id = 'btnLogout'; out.textContent = 'Cikis'; out.style.cssText =
+    out.id = 'btnLogout'; out.textContent = 'Çıkış'; out.style.cssText =
       'display:none;position:absolute;top:10px;right:10px;padding:5px 10px;border-radius:4px;border:1px solid var(--line);background:transparent;color:var(--text-dim);font-size:11px;cursor:pointer';
-    out.addEventListener('click', ()=>{ if(confirm('Oturum kapatilsin mi?')) firebase.auth().signOut(); });
+    out.addEventListener('click', ()=>{ if(confirm('Oturum kapatılsın mı?')) firebase.auth().signOut(); });
     if(getComputedStyle(hdr).position==='static') hdr.style.position='relative';
     hdr.appendChild(out);
   }
@@ -6411,7 +6631,7 @@ document.getElementById('btnEditTagFromStatus').addEventListener('click', ()=>{
     if(user){
       ov.style.display = 'none';
       if(out) out.style.display = 'block';
-      btn.disabled = false; btn.textContent = 'Giris Yap'; pass.value = '';
+      btn.disabled = false; btn.textContent = 'Giriş Yap'; pass.value = '';
       if(!started){ started = true; renderSelectView(); refreshAlertBadge(); }
     } else {
       ov.style.display = 'flex';

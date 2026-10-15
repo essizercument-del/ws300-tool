@@ -1451,6 +1451,16 @@ function escapeHtml(v){
 }
 
 // ---- ISO 10816 sınıf ve değerlendirme ----
+// Rapor ve analiz ekranında değerlendirmenin dayanağı (hangi standart, hangi bant).
+const ISO_BASIS_TEXT = 'Değerlendirme: ISO 10816-1 Ek B genel sınıf sınırları, 10–1000 Hz hız RMS. ISO 10816 serisinin yerini ISO 20816 almıştır; sınırlar genel kılavuz niteliğindedir.';
+// 600 rpm altında 1× devir frekansı 10 Hz'in altına düşer ve 10–1000 Hz bandına
+// girmez; standart bu makineler için 2–1000 Hz öngörür. Bant bilerek değiştirilmiyor
+// (≈2 sn'lik kayıtta ivmeden hıza çevirirken 10 Hz altı gürültü büyür), uyarı veriliyor.
+function isoLowSpeedNote(rpm){
+  const r = parseFloat(rpm);
+  if(!(r > 0) || r >= 600) return '';
+  return `Devir ${Math.round(r)} rpm (600 rpm altı): 1× devir frekansı ${(r/60).toFixed(1)} Hz, ölçüm bandının (10–1000 Hz) altında kalıyor. Standart bu makineler için 2–1000 Hz öngörür; gösterilen RMS ve bölge olduğundan düşük olabilir.`;
+}
 function isoClass(kw, foundation){
   if(!kw) return null;
   if(kw <= 15) return 'I';
@@ -1473,17 +1483,18 @@ function isoEvaluate(rmsVelocity, cls){
   return {zone:'D', label:'Tehlikeli', color:'#ff5d5d'};
 }
 
-// ISO 10816-3'ün standart metnine dayalı, her bölge için uzun açıklama.
+// ISO 10816 bölge tanımlarına dayalı, her bölge için uzun açıklama.
 const ISO_ZONE_DESCRIPTIONS = {
   A: 'Yeni devreye alınmış bir makineden beklenen tipik titreşim seviyesi. Herhangi bir aksiyon gerekmez, mevcut durumda çalışmaya devam edilebilir.',
   B: 'Titreşim seviyesi, makinenin sınırsız süreyle uzun vadeli çalışması için genellikle kabul edilebilir kabul edilir. Rutin izlemeye devam edilmesi yeterlidir.',
   C: 'Titreşim seviyesi, uzun süreli sürekli çalışma için normalde tatmin edici değildir. Makine, uygun bir bakım fırsatı bulunana kadar sınırlı bir süre bu durumda çalıştırılabilir; kök nedenin (dengesizlik, hizasızlık, rulman/yatak aşınması vb.) araştırılması önerilir.',
   D: 'Titreşim seviyesi, makinede hasara yol açacak kadar şiddetli kabul edilir. Mümkün olan en kısa sürede inceleme ve düzeltici bakım yapılması gerekir.'
 };
-// Sınıf açıklamaları (ISO 10816-3'e göre makine grupları)
+// Sınıf açıklamaları. ISO_ZONES sınırları ISO 10816-1 Ek B'deki genel sınıf
+// tablosudur (I–IV); 10816-3'ün kendi grup/temel tablosu farklıdır.
 const ISO_CLASS_LABELS = {
   I:   'Sınıf I — Küçük makineler (≤15 kW)',
-  II:  'Sınıf II — Orta boy makineler (15-75 kW), rijit temel',
+  II:  'Sınıf II — Orta boy makineler (15-75 kW)',
   III: 'Sınıf III — Büyük makineler (>75 kW), rijit temel',
   IV:  'Sınıf IV — Büyük makineler (>75 kW), esnek temel'
 };
@@ -4298,7 +4309,7 @@ function renderScreeningNote(){
     (needRepeat ? '<div style="margin-top:6px; color:'+col+';"><b>Teyit için sensörü yerinden oynatmadan bu noktayı bir kez daha ölçün.</b> Tek ölçümlük sapmalar ardışık ölçümlerde doğal olarak %30-50 oynayabilir.</div>' : '');
 }
 
-// Bir eksen için ISO 10816-3'e göre uzun-form analiz metni (HTML) üretir:
+// Bir eksen için ISO 10816'ya göre uzun-form analiz metni (HTML) üretir:
 // sınıf, ulaşılan bölge, o sınıfın bölge sınırları ve bölgenin standart
 // açıklaması. selTag'de kW/temel tipi tanımlı değilse uyarı metni döner.
 function buildIsoAnalysisHtml(ax){
@@ -4323,7 +4334,9 @@ function buildIsoAnalysisHtml(ax){
     <div style="margin-bottom:12px;">${ISO_ZONE_DESCRIPTIONS[v.zone]}</div>
     <div style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text-dim); border-top:1px solid var(--line); padding-top:8px;">
       Sınıf ${cls} bölge sınırları (mm/s RMS): A≤${ab} · B≤${bc} · C≤${cd} · D&gt;${cd}
-    </div>`;
+    </div>
+    ${(()=>{ const n = isoLowSpeedNote(document.getElementById('rpmInput').value); return n ? `<div style="margin-top:8px; font-size:11.5px; color:var(--amber);">⚠ ${n}</div>` : ''; })()}
+    <div style="margin-top:8px; font-size:10.5px; color:var(--text-dim);">${ISO_BASIS_TEXT}</div>`;
 }
 
 // ============================================================
@@ -5984,7 +5997,8 @@ function buildIsoSectionData(meta){
   }
   const boundariesTxt = cls ? (()=>{
     const [ab,bc,cd] = ISO_ZONES[cls];
-    return `${ISO_CLASS_LABELS[cls]} — Bölge sınırları (mm/s RMS): A≤${ab} · B≤${bc} · C≤${cd} · D>${cd}`;
+    const low = isoLowSpeedNote(meta.rpm);
+    return `${ISO_CLASS_LABELS[cls]} — Bölge sınırları (mm/s RMS): A≤${ab} · B≤${bc} · C≤${cd} · D>${cd}<br>${ISO_BASIS_TEXT}` + (low ? `<br>⚠ ${low}` : '');
   })() : 'Bu tag için motor gücü (kW) tanımlanmadığından ISO sınıfı belirlenemedi.';
   return { rowsHtml, boundariesTxt };
 }

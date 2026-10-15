@@ -1,0 +1,8 @@
+{
+  "name": "ws300-tool",
+  "private": true,
+  "description": "WS300 titreşim analiz aracı — hesap çekirdeği testleri",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  }
+}

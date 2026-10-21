@@ -23,7 +23,7 @@ for(const file of APP_FILES){
   const api = load(file, {
     // assessSignalQuality global axisSamples'ı okur; testten doldurabilmek için erişimci.
     prelude: 'var SAMPLE_RATE_HZ = 6510; var SCALE_G_PER_LSB = 0.0006104; var axisSamples = {}; function getAxisSamples(){ return axisSamples; }',
-    exports: ['getAxisSamples'],
+    exports: ['getAxisSamples', 'shaftFaultBreakdown', 'estimateMainsBase'],
     names: ['parseSensorSampleRate', 'nextPow2', 'fft', 'ifft', 'computePSD', 'envelopeSpectrum',
       'velocitySpectrumFromAccelPSD', 'rmsAccelFromPSD', 'downsampleSpectrum',
       'ISO_ZONES', 'isoClass', 'isoEvaluate', 'ISO_BASIS_TEXT', 'isoLowSpeedNote',
@@ -132,5 +132,40 @@ for(const file of APP_FILES){
     const fault = level(signal((t) => g() + sine(87.3, 0.15)(t) + sine(174.6, 0.1)(t)));
     assert.ok(fault.level >= 2, `arıza seviyesi ${fault.level}`);
     assert.equal(fault.perKey.slice().sort((a, b) => b.level - a.level)[0].key, 'BPFO');
+  });
+
+  test(`${file}: otomatik tanı payları doğru kaynağa gidiyor ve toplamı OVL'ye eşit`, () => {
+    const fr = 24.6; // 1476 rpm
+    // İvme genliğini (g), istenen hız tepe değerinden (mm/s) üret.
+    const accFor = (f, vPeakMms) => vPeakMms / 1000 * 2 * Math.PI * f / G;
+    const run = (comps, seed) => {
+      const g = rng(seed);
+      const x = signal((t) => 0.002 * g() + comps.reduce((s, [f, v]) => s + sine(f, accFor(f, v))(t), 0));
+      const { freqs, psd } = api.computePSD(x, FS);
+      const { velAmp, rmsVelocity } = api.velocitySpectrumFromAccelPSD(freqs, psd, 10, 1000);
+      const r = api.shaftFaultBreakdown(freqs, velAmp, fr, 50, rmsVelocity);
+      const sum = r.parts.unbalance + r.parts.misalignment + r.parts.looseness + r.parts.other;
+      assert.ok(Math.abs(sum - rmsVelocity) < 0.03, `paylar toplamı ${sum} ≠ OVL ${rmsVelocity}`);
+      return r;
+    };
+    const unb = run([[fr, 6], [2 * fr, 1]], 11);
+    assert.equal(unb.dominant, 'unbalance');
+    assert.ok(unb.shares.unbalance > 0.85, `dengesizlik payı ${unb.shares.unbalance}`);
+    const mis = run([[fr, 1.5], [2 * fr, 5], [3 * fr, 1]], 12);
+    assert.equal(mis.dominant, 'misalignment');
+    const loose = run([[fr, 1], [1.5 * fr, 2], [3 * fr, 3], [4 * fr, 2.5], [5 * fr, 2]], 13);
+    assert.equal(loose.dominant, 'looseness');
+    // Devirle ilgisiz tepe (rulman 87.3 Hz + şebeke 100 Hz) → "diğer".
+    const oth = run([[87.3, 4], [100, 3], [fr, 0.5]], 14);
+    assert.equal(oth.dominant, null);
+    assert.ok(oth.shares.other > 0.8, `diğer payı ${oth.shares.other}`);
+    // 2× devir şebekeyle iç içe (24.9 Hz → 49.8 Hz): saf 50 Hz şebeke çizgisi hizalama sayılmamalı.
+    const g = rng(15);
+    const xm = signal((t) => 0.002 * g() + sine(50, accFor(50, 4))(t));
+    const sp = api.computePSD(xm, FS);
+    const vm2 = api.velocitySpectrumFromAccelPSD(sp.freqs, sp.psd, 10, 1000);
+    const rm = api.shaftFaultBreakdown(sp.freqs, vm2.velAmp, 24.9, 50, vm2.rmsVelocity);
+    assert.notEqual(rm.dominant, 'misalignment', `şebeke çizgisi hizalama sanıldı (${rm.shares.misalignment})`);
+    assert.equal(api.shaftFaultBreakdown(sp.freqs, vm2.velAmp, null, 50, 1), null, 'devir yoksa null');
   });
 }

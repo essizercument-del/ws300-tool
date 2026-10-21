@@ -202,6 +202,22 @@ db.enablePersistence({ synchronizeTabs: true }).catch(err=>{
   }
   .axis-card:active{ transform:scale(.97); }
   .axis-card.has-data{ border-color:var(--phosphor-dim); }
+  .ad-panel{ margin:12px 18px 0; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .ad-title{ font-size:13px; font-weight:600; margin-bottom:2px; }
+  .ad-sub{ font-size:11px; color:var(--text-dim); margin-bottom:10px; line-height:1.45; }
+  .ad-row{ margin-bottom:12px; }
+  .ad-row:last-of-type{ margin-bottom:6px; }
+  .ad-head{ display:flex; align-items:baseline; gap:8px; font-size:12px; margin-bottom:5px; }
+  .ad-head b{ font-family:'JetBrains Mono',monospace; }
+  .ad-head .ad-dom{ margin-left:auto; font-size:11.5px; }
+  .ad-bar{ display:flex; height:12px; border-radius:6px; overflow:hidden; background:var(--line); gap:2px; }
+  .ad-bar span{ display:block; height:100%; min-width:0; }
+  .ad-vals{ display:grid; grid-template-columns:1fr 1fr; gap:3px 10px; margin-top:6px; white-space:nowrap; font-family:'JetBrains Mono',monospace; font-size:10.5px; color:var(--text-dim); }
+  .ad-vals i{ display:inline-block; width:7px; height:7px; border-radius:2px; margin-right:4px; vertical-align:middle; }
+  .ad-vals b{ color:var(--text); font-weight:500; }
+  .ad-help{ margin-top:8px; border-top:1px solid var(--line); padding-top:8px; font-size:11.5px; line-height:1.55; color:var(--text-dim); }
+  .ad-help summary{ cursor:pointer; color:var(--text); font-size:12px; }
+  .ad-help p{ margin:6px 0 0; }
   .hint{
     font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text-dim);
     text-align:right; margin:16px 18px 8px;
@@ -549,6 +565,21 @@ db.enablePersistence({ synchronizeTabs: true }).catch(err=>{
       <div class="vel-verdict" id="verdictZ"></div>
       <div class="accel">İvme: <b id="accelZ">—</b> g RMS</div>
     </div>
+  </div>
+
+  <div class="ad-panel" id="autoDiagPanel" style="display:none">
+    <div class="ad-title">Otomatik Tanı — titreşimin kaynağına göre dağılımı</div>
+    <div class="ad-sub" id="autoDiagSub"></div>
+    <div id="autoDiagRows"></div>
+    <details class="ad-help">
+      <summary>Bu çubuklar nasıl okunur?</summary>
+      <p>Her eksendeki toplam hız (mm/s) spektrumdaki yerine göre dört paya bölünür; dört pay toplanınca kartlardaki değeri verir.</p>
+      <p><b style="color:#ff9f43">Dengesizlik</b> — enerjinin tam devir frekansında (1×) toplanan kısmı. Rotorun kütlesi eşit dağılmamış: tipik çözüm balans.</p>
+      <p><b style="color:#feca57">Hizalama</b> — devrin 2 katında (2×) toplanan kısım. Motor ile tahrik ettiği makinenin milleri aynı eksende değil (kaplin kaçıklığı). Eksenel yönde 1× de yüksekse bu yorum güçlenir.</p>
+      <p><b style="color:#ff6b6b">Gevşeklik</b> — devrin 3–10 katlarında ve buçuklu katlarında (½×, 1½×, 2½×) toplanan kısım. Ayak/gövde cıvatası, yatak yuvası boşluğu ya da çatlak kaide.</p>
+      <p><b style="color:#7c8a80">Diğer</b> — devirle ilgisi olmayan her şey: şebeke/elektrik (50–100 Hz ve katları), rulman, fan/pompa kanadı, akış, rezonans.</p>
+      <p>Toplam seviye düşükse (ISO bölge A) paylar yalnızca bilgi amaçlıdır; bir payın büyük olması tek başına arıza demek değildir. Karar için hem toplam seviyeye hem de payın ölçümden ölçüme artıp artmadığına bakın.</p>
+    </details>
   </div>
 
   <div class="log" id="log"></div>
@@ -1370,6 +1401,7 @@ async function choosePoint(point){
   document.getElementById('statusView').style.display = 'block';
   showMain();
   { const sn = document.getElementById('screenNote'); if(sn){ sn.style.display='none'; sn.innerHTML=''; } }
+  { const ad = document.getElementById('autoDiagPanel'); if(ad) ad.style.display='none'; }
   document.getElementById('velX').textContent = '—';
   document.getElementById('velY').textContent = '—';
   document.getElementById('velZ').textContent = '—';
@@ -1464,6 +1496,8 @@ async function saveMeasurementToFirestore(qualityIssues){
   }
   const shaftEst = liveShaftHz(rpmVal);
   if(shaftEst) doc.shaftHz = Math.round(shaftEst*100)/100;
+  // Otomatik tanı payları (mm/s) — trend ve rapor için.
+  { const ad = liveAutoDiag(); if(ad.axes){ doc.autoDiag = {}; ['X','Y','Z'].forEach(ax=>{ if(ad.axes[ax]) doc.autoDiag[ax] = ad.axes[ax].parts; }); } }
   // Kalite şüpheli olduğu bilinerek kaydedilen ölçümler not alanında işaretlenir.
   if(qualityIssues && qualityIssues.length) doc.note = 'Kalite uyarısı: ' + qualityIssues.join('; ');
   try{
@@ -3884,7 +3918,57 @@ function computeResults(){
     log('Bu tag için kW/temel tipi tanımlı değil — ISO 10816 değerlendirmesi yapılamadı. Tag düzenlemesinden ekleyebilirsiniz.', 'warn');
   }
   renderScreeningNote();
+  renderAutoDiag();
 }
+
+// Canlı ölçüm için eksen başına otomatik tanıyı hesaplar (devir girilmemişse null).
+function liveAutoDiag(){
+  const rpm = parseFloat(document.getElementById('rpmInput').value) || null;
+  if(!rpm) return { rpm:null, shaftHz:null, estimated:false, axes:null };
+  const est = liveShaftHz(rpm);
+  const shaftHz = (est && isFinite(est)) ? est : rpm/60;
+  const axes = {};
+  ['X','Y','Z'].forEach(ax=>{
+    const sp = axisSpectra[ax];
+    if(!sp) return;
+    const mains = estimateMainsBase(normalizePsdForAnalysis(sp.freqs, sp.psd));
+    axes[ax] = shaftFaultBreakdown(sp.freqs, sp.velAmp, shaftHz, mains, sp.rmsVelocity);
+  });
+  return { rpm, shaftHz, estimated: !!est, axes };
+}
+
+function renderAutoDiag(){
+  const panel = document.getElementById('autoDiagPanel');
+  if(!panel) return;
+  if(!['X','Y','Z'].some(ax=>axisSpectra[ax])){ panel.style.display = 'none'; return; }
+  const d = liveAutoDiag();
+  panel.style.display = 'block';
+  const sub = document.getElementById('autoDiagSub');
+  const rows = document.getElementById('autoDiagRows');
+  if(!d.axes){
+    sub.textContent = 'Devir (RPM) girilmediği için hesaplanamadı. RPM yazınca güncellenir.';
+    rows.innerHTML = '';
+    return;
+  }
+  sub.textContent = d.estimated
+    ? `Devir spektrumdan ölçüldü: ${(d.shaftHz*60).toFixed(0)} rpm (${d.shaftHz.toFixed(2)} Hz) — girilen ${d.rpm} rpm.`
+    : `Girilen devir kullanıldı: ${d.rpm} rpm (${d.shaftHz.toFixed(2)} Hz). Spektrumda net 1× tepesi bulunamadı.`;
+  rows.innerHTML = ['X','Y','Z'].map(ax=>{
+    const r = d.axes[ax];
+    if(!r) return '';
+    const total = AD_KEYS.reduce((s,k)=>s + r.parts[k], 0);
+    const bar = AD_KEYS.map(k=> r.shares[k] > 0.005
+      ? `<span style="flex:${r.shares[k].toFixed(4)}; background:${AD_COLORS[k]}" title="${AD_LABELS[k]}: ${r.parts[k].toFixed(2)} mm/s"></span>` : '').join('');
+    const vals = AD_KEYS.map(k=>`<div><i style="background:${AD_COLORS[k]}"></i>${AD_LABELS[k]} <b>${r.parts[k].toFixed(2)}</b> · %${Math.round(r.shares[k]*100)}</div>`).join('');
+    const dom = r.dominant
+      ? `<span class="ad-dom" style="color:${AD_COLORS[r.dominant]}">Baskın: ${AD_LABELS[r.dominant]}</span>`
+      : `<span class="ad-dom" style="color:var(--text-dim)">Baskın mil kaynağı yok</span>`;
+    return `<div class="ad-row"><div class="ad-head"><span style="color:${AXIS_COLORS[ax]}">${ax}</span><b>${total.toFixed(2)} mm/s</b>${dom}</div>
+      <div class="ad-bar">${bar}</div><div class="ad-vals">${vals}</div></div>`;
+  }).join('');
+}
+
+document.getElementById('rpmInput').addEventListener('input', ()=>{ if(['X','Y','Z'].some(ax=>axisSpectra[ax])) renderAutoDiag(); });
 
 // Canlı ölçümden sonra tarama sonucunu kısa bir notla gösterir; teyit edilmemiş
 // her bulgu için "bu noktayı bir kez daha ölçün" der. Kayıt sonrası da çağrılır.
@@ -4926,6 +5010,84 @@ function estimateMainsBase(norm){
   if(med < 48.5 || med > 51.5) return MAINS_HZ;
   const close = bases.filter(b=>Math.abs(b - med) <= 0.35);
   return close.length >= 3 ? medianOf(close) : MAINS_HZ;
+}
+
+// ============================================================
+// OTOMATİK TANI — hız payı ayrıştırması (Able Handy "Auto Diagnose" eşdeğeri)
+// ============================================================
+// Able Handy sunucusu her eksenin toplam hızını (OVL, mm/s) dengesizlik /
+// hizalama / gevşeklik / ilgisiz paylarına bölüp bunların toplamını OVL'ye
+// eşitleyerek gösteriyor. Biz aynı çıktıyı cihazda, hız spektrumunun enerjisini
+// mil harmoniklerine göre bantlara ayırarak üretiyoruz:
+//   1×            → dengesizlik
+//   2×            → hizalama bozukluğu
+//   3×–10× ve ½× katları (0.5×, 1.5×, 2.5×) → mekanik gevşeklik
+//   geri kalanı   → diğer (şebeke/elektrik çizgileri dahil)
+// Pay = OVL × (bant enerjisi / toplam enerji): paylar doğrusal toplanınca OVL'yi
+// verir (çubuk grafikte tam doluluk). velAmp, Σ velAmp² = OVL² olacak şekilde
+// her frekans noktasının RMS katkısıdır (velocitySpectrumFromAccelPSD).
+const AD_KEYS = ['unbalance','misalignment','looseness','other'];
+const AD_LABELS = { unbalance:'Dengesizlik', misalignment:'Hizalama', looseness:'Gevşeklik', other:'Diğer' };
+const AD_COLORS = { unbalance:'#ff9f43', misalignment:'#feca57', looseness:'#ff6b6b', other:'#7c8a80' };
+const AD_MAX_HARMONIC = 10;
+const AD_DOMINANT_SHARE = 0.4; // bir kaynağın "baskın" sayılması için toplam enerjideki asgari payı
+// Buçuklu katlar 2.5×'te kesilir: 62xx/63xx rulmanların BPFO'su (3.0–3.6×) ve
+// BPFI'si (4.4–5.4×) 3.5×/4.5×/5.5× pencerelerine düşüp gevşeklik sanılırdı.
+const AD_MAX_HALF_ORDER = 2.5;
+
+// Mil harmoniği hedefinin yarı bant genişliği (Hz): Hann penceresinin ana lobu
+// (~±1 Hz) ve devir tahmini belirsizliğinin harmonik numarasıyla büyümesi.
+function adHalfWidth(target){ return Math.max(1.2, 0.012*target); }
+
+// Bir frekansı kategoriye atar. Şebeke harmoniğine mil harmoniğinden daha yakın
+// olan noktalar "diğer"e gider (ör. 1490 rpm'de 2× = 49.7 Hz ile 50 Hz iç içe).
+function adCategoryOf(f, shaftHz, mainsHz){
+  let best = null, bestR = Infinity;
+  for(let h=1; h<=2*AD_MAX_HARMONIC; h++){
+    const order = h/2;
+    if(order > AD_MAX_HALF_ORDER && h % 2) continue;
+    const target = order*shaftHz;
+    const r = Math.abs(f - target)/adHalfWidth(target);
+    if(r <= 1 && r < bestR){ bestR = r; best = order; }
+  }
+  if(best === null) return 'other';
+  const base = mainsHz || MAINS_HZ;
+  const k = Math.round(f/base);
+  if(k >= 1){
+    const m = k*base, tol = Math.max(1.0, 0.006*m);
+    if(Math.abs(f - m) <= tol && Math.abs(f - m)/tol < bestR) return 'other';
+  }
+  if(best === 1) return 'unbalance';
+  if(best === 2) return 'misalignment';
+  return 'looseness';
+}
+
+// f, velAmp: tam çözünürlüklü hız spektrumu. ovl: o eksenin toplam hız RMS'i (mm/s).
+// Dönüş: { parts:{unbalance,misalignment,looseness,other} (mm/s), shares:{…} (0–1),
+//          dominant: anahtar|null } — devir yoksa null.
+function shaftFaultBreakdown(f, velAmp, shaftHz, mainsHz, ovl){
+  if(!f || !f.length || !(shaftHz > 0)) return null;
+  const e = { unbalance:0, misalignment:0, looseness:0, other:0 };
+  let total = 0;
+  for(let i=0;i<f.length;i++){
+    const a = velAmp[i];
+    if(!(a > 0)) continue;
+    const p = a*a;
+    total += p;
+    e[adCategoryOf(f[i], shaftHz, mainsHz)] += p;
+  }
+  if(!(total > 0)) return null;
+  const level = (ovl > 0) ? ovl : Math.sqrt(total);
+  const parts = {}, shares = {};
+  AD_KEYS.forEach(k=>{
+    shares[k] = e[k]/total;
+    parts[k] = Math.round(level*shares[k]*100)/100;
+  });
+  let dominant = null, dv = 0;
+  ['unbalance','misalignment','looseness'].forEach(k=>{
+    if(shares[k] >= AD_DOMINANT_SHARE && shares[k] > dv){ dv = shares[k]; dominant = k; }
+  });
+  return { parts, shares, dominant };
 }
 
 function lineLabel(c){ return (c.h===1 ? '' : c.h+'×') + c.key; }

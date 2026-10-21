@@ -4042,6 +4042,9 @@ function bfiFor(envF, envV, code, rpm, shaftHz, mainsHz){
 // Kayıtlı bir ölçüm dokümanı için eksen başına BFI (kayıtta yoksa zarf verisinden hesaplanır).
 function bfiForDoc(m, code){
   const out = {};
+  // sampleRate alanı olmayan eski kayıtlar 12800 Hz varsayımıyla kaydedildi: zarf
+  // frekansları 2 kat hatalı olduğundan bunlar için skor hesaplanmaz.
+  if(!m.sampleRate && !m.bfi){ out.X = out.Y = out.Z = null; return out; }
   ['X','Y','Z'].forEach(ax=>{
     if(m.bfi && m.bfi[ax]){ out[ax] = m.bfi[ax]; return; }
     const ed = m.envelope && m.envelope[ax];

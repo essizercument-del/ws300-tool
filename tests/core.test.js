@@ -23,13 +23,13 @@ for(const file of APP_FILES){
   const api = load(file, {
     // assessSignalQuality global axisSamples'ı okur; testten doldurabilmek için erişimci.
     prelude: 'var SAMPLE_RATE_HZ = 6510; var SCALE_G_PER_LSB = 0.0006104; var axisSamples = {}; function getAxisSamples(){ return axisSamples; }',
-    exports: ['getAxisSamples', 'shaftFaultBreakdown', 'estimateMainsBase', 'bearingFaultIndex', 'axisRoleOf', 'axialMisalignmentCheck'],
+    exports: ['getAxisSamples', 'shaftFaultBreakdown', 'estimateMainsBase', 'bearingFaultIndex', 'axisRoleOf', 'axialMisalignmentCheck', 'bfiSummaryOf', 'evaluateBfiTrend'],
     names: ['parseSensorSampleRate', 'nextPow2', 'fft', 'ifft', 'computePSD', 'envelopeSpectrum',
       'velocitySpectrumFromAccelPSD', 'rmsAccelFromPSD', 'downsampleSpectrum',
       'ISO_ZONES', 'isoClass', 'isoEvaluate', 'ISO_BASIS_TEXT', 'isoLowSpeedNote',
       'escapeHtml', 'findSeqGaps', 'ENV_SPEC_F_MAX',
       'Q_CLIP_LSB', 'Q_CLIP_MIN_COUNT', 'Q_FLAT_STD_LSB', 'Q_STUCK_RUN', 'Q_SPIKE_LSB', 'Q_LEN_MISMATCH',
-      'assessSignalQuality'],
+      'assessSignalQuality', 'medianOfNums'],
     regions: [['const MAINS_HZ', 'analyzeBearing']],
   });
 
@@ -206,5 +206,19 @@ for(const file of APP_FILES){
     assert.equal(api.axialMisalignmentCheck({ X: ax(3), Y: ax(2), Z: ax(0.6) }, o), null, 'eksenel düşük → saf dengesizlik');
     assert.equal(api.axialMisalignmentCheck({ X: ax(0.6), Y: ax(0.5), Z: ax(0.4) }, o), null, 'çok düşük seviye yorumlanmaz');
     assert.equal(api.axialMisalignmentCheck({ X: ax(3), Y: ax(2), Z: ax(3) }, null), null, 'yönelim yok');
+  });
+
+  test(`${file}: rulman skoru uyarı kuralı (yüksek / artan / teyit)`, () => {
+    const s = api.bfiSummaryOf({ X: { BPFO: 12, BPFI: 3, BSF: 0 }, Y: null, Z: { BPFO: 2, BPFI: 41, BSF: 5 } });
+    assert.deepEqual({ ...s }, { value: 41, ax: 'Z', key: 'BPFI' });
+    assert.equal(api.bfiSummaryOf(null), null);
+    const r = (...vals) => vals.map(v => ({ bfi: v == null ? null : { value: v, ax: 'X', key: 'BPFO' } }));
+    assert.equal(api.evaluateBfiTrend(r(5, 8, 6, 10)), null, 'düşük ve sabit');
+    const rising = api.evaluateBfiTrend(r(5, 8, 6, 35));
+    assert.equal(rising.kind, 'rising'); assert.equal(rising.confirmed, false);
+    assert.equal(api.evaluateBfiTrend(r(5, 8, 32, 36)).confirmed, true, 'art arda ikinci artış teyitli');
+    assert.equal(api.evaluateBfiTrend(r(25, 28, 30, 38)), null, 'zaten yüksek seyreden, 15 puan artmamış');
+    assert.equal(api.evaluateBfiTrend(r(65)).kind, 'high', 'ilk ölçümde bile %60 üstü');
+    assert.equal(api.evaluateBfiTrend(r(null, null, 50)), null, 'geçmişi yok, %60 altında');
   });
 }

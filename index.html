@@ -835,6 +835,7 @@ let selTag = null;    // {id, name}
 let selPoint = null;  // 'on' | 'arka'
 let pendingDelete = null; // {type:'unit'|'tag', id, name}
 let trendChart = null;
+let liveSavedToSummary = false; // canlı ölçüm lastMeas özetine yazıldı mı (tarama notunda çift sayımı önler)
 let trendDocsData = []; // bu noktanın tüm ölçümleri (eskiden yeniye) — hız paneli karşılaştırması için
 
 function unitsCol(){ return db.collection('units'); }
@@ -968,7 +969,7 @@ async function renderSelectView(){
       let rank = 4; // sorun yok
       if(s.worst==='D') rank = TAG_RANK.D;
       else if(s.worst==='C') rank = TAG_RANK.C;
-      else if(s.worseningCount) rank = TAG_RANK.worsening;
+      else if(s.worseningCount || s.bearingCount) rank = TAG_RANK.worsening;
       else if(s.nearCount) rank = TAG_RANK.near;
       else if(s.staleCount) rank = TAG_RANK.stale;
       return {t, i, s, rank};
@@ -1248,7 +1249,11 @@ async function syncLastMeasAfterDelete(unitId, tagId, point){
       return ta - tb;
     });
     const latest = docs[docs.length-1].data();
-    const recent = docs.slice(-RECENT_KEEP).map(d=>({ velRMS: d.data().velRMS || {} }));
+    const bCode = recentBfiCode(tagId, point, typeof tag !== 'undefined' ? tag : null);
+    const recent = docs.slice(-RECENT_KEEP).map(d=>{
+      const m = d.data();
+      return { velRMS: m.velRMS || {}, bfi: bCode ? bfiSummaryOf(bfiForDoc(m, bCode)) : null };
+    });
     const prevD = docs.length >= 2 ? docs[docs.length-2].data() : null;
     const summary = { timestamp: latest.timestamp || null, velRMS: latest.velRMS || {}, isoZone: latest.isoZone || {}, rpm: latest.rpm || null,
                       prevVelRMS: prevD ? (prevD.velRMS || null) : null, prevIsoZone: prevD ? (prevD.isoZone || null) : null, recent,
@@ -1446,6 +1451,7 @@ async function choosePoint(point){
   showMain();
   { const sn = document.getElementById('screenNote'); if(sn){ sn.style.display='none'; sn.innerHTML=''; } }
   { const ad = document.getElementById('autoDiagPanel'); if(ad) ad.style.display='none'; }
+  liveSavedToSummary = false;
   refreshAxisRoles();
   document.getElementById('velX').textContent = '—';
   document.getElementById('velY').textContent = '—';
@@ -1565,8 +1571,8 @@ async function saveMeasurementToFirestore(qualityIssues){
     // yapabiliyor. İlk ölçümde (henüz eski özet yokken) bu alanlar boş kalır.
     const prevSummary = selTag.lastMeas && selTag.lastMeas[selPoint];
     // Taban değer için son RECENT_KEEP ölçümün küçük özeti (eskiden yeniye).
-    const prevRecentAll = recentFromSummary(prevSummary).map(r=>({velRMS:r.velRMS||{}}));
-    const newRecent = prevRecentAll.concat([{velRMS: doc.velRMS}]).slice(-RECENT_KEEP);
+    const prevRecentAll = recentFromSummary(prevSummary).map(r=>({velRMS:r.velRMS||{}, bfi: r.bfi || null}));
+    const newRecent = prevRecentAll.concat([{velRMS: doc.velRMS, bfi: bfiSummaryOf(doc.bfi)}]).slice(-RECENT_KEEP);
     // Sabit taban: noktanın ilk BASELINE_COUNT ölçümü tamamlandığında bir kez belirlenir, sonra değişmez.
     let newBaseline = prevSummary && prevSummary.baseline ? prevSummary.baseline : null;
     const seenCount = ((prevSummary && prevSummary.count) || prevRecentAll.length) + 1;
@@ -1598,6 +1604,7 @@ async function saveMeasurementToFirestore(qualityIssues){
       .catch(err=> log('Firestore kayıt hatası: ' + err.message, 'err'));
     // selTag'i de güncel tut — aynı ekranda art arda ölçüm alınırsa bir
     // sonraki save'in prevSummary'si doğru (bir önceki, bayat değil) olsun.
+    liveSavedToSummary = true;
     selTag.lastMeas = selTag.lastMeas || {};
     selTag.lastMeas[selPoint] = { timestamp:measTs, velRMS:doc.velRMS, isoZone:doc.isoZone, rpm:rpmVal, prevVelRMS: prevSummary?(prevSummary.velRMS||null):null, prevIsoZone: prevSummary?(prevSummary.isoZone||null):null, recent: newRecent, baseline: newBaseline, count: seenCount };
     // Trend okuması zayıf bağlantıda saniyelerce sürebilir; ölçüm akışını bekletmesin.
@@ -1642,6 +1649,12 @@ function baselineFromDocs(docsAsc){
   const first = docsAsc.slice(0, BASELINE_COUNT).map(d=>d.data().velRMS || {});
   const b = {}; ['X','Y','Z'].forEach(ax=>{ b[ax] = medianOfNums(first.map(v=>v[ax])); });
   return b;
+}
+// Özet "recent" girdilerinde BFI için o noktanın rulman kodu (tag verilmezse açık olan tag).
+function recentBfiCode(tagId, point, tag){
+  const t = tag || ((selTag && selTag.id === tagId) ? selTag : null);
+  const raw = t ? (point === 'on' ? t.bearingOn : t.bearingArka) : null;
+  return raw ? String(raw).trim() : null;
 }
 function medianOfNums(arr){
   const a = arr.filter(v=>v!=null && isFinite(v)).sort((x,y)=>x-y);
@@ -1713,7 +1726,7 @@ function recentFromSummary(summary){
 
 
 
-async function backfillLastMeas(unitId, tagId, point){
+async function backfillLastMeas(unitId, tagId, point, tag){
   try{
     const snap = await fsGet(measCol(unitId, tagId).where('point','==',point));
     if(snap.empty) return null;
@@ -1723,7 +1736,11 @@ async function backfillLastMeas(unitId, tagId, point){
       return ta - tb;
     });
     const latest = docs[docs.length-1].data();
-    const recent = docs.slice(-RECENT_KEEP).map(d=>({ velRMS: d.data().velRMS || {} }));
+    const bCode = recentBfiCode(tagId, point, typeof tag !== 'undefined' ? tag : null);
+    const recent = docs.slice(-RECENT_KEEP).map(d=>{
+      const m = d.data();
+      return { velRMS: m.velRMS || {}, bfi: bCode ? bfiSummaryOf(bfiForDoc(m, bCode)) : null };
+    });
     const prevD = docs.length >= 2 ? docs[docs.length-2].data() : null;
     const summary = { timestamp: latest.timestamp || null, velRMS: latest.velRMS || {}, isoZone: latest.isoZone || {}, rpm: latest.rpm || null,
                       prevVelRMS: prevD ? (prevD.velRMS || null) : null, prevIsoZone: prevD ? (prevD.isoZone || null) : null, recent,
@@ -1748,7 +1765,7 @@ async function scanAlerts(){
       const tag = {id: tDoc.id, ...tDoc.data()};
       for(const point of ['on','arka']){
         let summary = tag.lastMeas && tag.lastMeas[point];
-        if(!summary) summary = await backfillLastMeas(unit.id, tag.id, point);
+        if(!summary) summary = await backfillLastMeas(unit.id, tag.id, point, tag);
         const pointLabel = point==='on' ? 'Ön (DE)' : 'Arka (NDE)';
         if(!summary){
           results.push({unit, tag, point, pointLabel, kind:'none'});
@@ -1767,6 +1784,8 @@ async function scanAlerts(){
           else if(e.near) results.push({unit, tag, point, pointLabel, kind:'near', zone:e.zone, ax, velRMS:e.value, limit:e.near.limit, confirmed:e.near.confirmed, ts});
           if(e.worsening) results.push({unit, tag, point, pointLabel, kind:'worsening', ax, zone:e.zone, velRMS:e.value, baseRMS:e.worsening.base, ratio:e.worsening.ratio, baseKind:e.worsening.kind, confirmed:e.worsening.confirmed, ts});
         });
+        const bt = evaluateBfiTrend(recentFromSummary(summary));
+        if(bt) results.push({unit, tag, point, pointLabel, kind:'bearing', ax:bt.ax, key:bt.key, bfi:bt.value, base:bt.base, trend:bt.kind, confirmed:bt.confirmed, ts});
       }
     }
   }
@@ -1778,7 +1797,7 @@ async function scanAlerts(){
   // bu yüzden 50 motora çıkınca da maliyeti düşük kalır.
   const verified = [];
   for(const r of results){
-    if(r.kind === 'zone' || r.kind === 'worsening' || r.kind === 'near'){
+    if(r.kind === 'zone' || r.kind === 'worsening' || r.kind === 'near' || r.kind === 'bearing'){
       const check = await fsGet(measCol(r.unit.id, r.tag.id).where('point','==',r.point).limit(1));
       // Önbellekten gelen boş sonuç "ölçüm silinmiş" anlamına gelmez (henüz önbelleğe
       // alınmamış olabilir); bu durumda uyarı korunur, özet onarılmaz.
@@ -1790,7 +1809,7 @@ async function scanAlerts(){
     verified.push(r);
   }
   // En kötüsü en üstte: önce Zone D, sonra Zone C, sonra kötüleşen, sonra en uzun süredir ölçülmeyenler.
-  const rank = {D:0, C:1, worsening:2, near:3, stale:4, none:5};
+  const rank = {D:0, C:1, worsening:2, bearing:2, near:3, stale:4, none:5};
   verified.sort((a,b)=>{
     const ra = a.kind==='zone' ? rank[a.zone] : rank[a.kind];
     const rb = b.kind==='zone' ? rank[b.zone] : rank[b.kind];
@@ -1809,6 +1828,7 @@ function summarizeAlerts(results){
   const zonePoints = new Set();
   const worseningPoints = new Set();
   const nearPoints = new Set();
+  const bearingPoints = new Set();
   const unconfirmedPoints = new Set();
   let worst = null; // 'D' | 'C' | null — rozetin rengini belirler
   let staleOrNoneCount = 0;
@@ -1821,12 +1841,14 @@ function summarizeAlerts(results){
       worseningPoints.add(r.unit.id+'|'+r.tag.id+'|'+r.point);
     } else if(r.kind === 'near'){
       nearPoints.add(r.unit.id+'|'+r.tag.id+'|'+r.point);
+    } else if(r.kind === 'bearing'){
+      bearingPoints.add(r.unit.id+'|'+r.tag.id+'|'+r.point);
     } else {
       staleOrNoneCount++;
     }
   });
-  results.forEach(r=>{ if((r.kind==='zone'||r.kind==='worsening'||r.kind==='near') && !r.confirmed) unconfirmedPoints.add(r.unit.id+'|'+r.tag.id+'|'+r.point); });
-  return { zoneCount: zonePoints.size, worseningCount: worseningPoints.size, nearCount: nearPoints.size, unconfirmedCount: unconfirmedPoints.size, staleCount: staleOrNoneCount, worst };
+  results.forEach(r=>{ if((r.kind==='zone'||r.kind==='worsening'||r.kind==='near'||r.kind==='bearing') && !r.confirmed) unconfirmedPoints.add(r.unit.id+'|'+r.tag.id+'|'+r.point); });
+  return { zoneCount: zonePoints.size, worseningCount: worseningPoints.size, nearCount: nearPoints.size, bearingCount: bearingPoints.size, unconfirmedCount: unconfirmedPoints.size, staleCount: staleOrNoneCount, worst };
 }
 
 // Ana sayfadaki ünite satırının altına tek satır özet metni üretir.
@@ -1836,6 +1858,7 @@ function formatAlertSummaryText(s){
   if(s.zoneCount) parts.push(s.zoneCount + ' Zone C/D');
   if(s.worseningCount) parts.push(s.worseningCount + ' kötüleşen');
   if(s.nearCount) parts.push(s.nearCount + ' sınıra yakın');
+  if(s.bearingCount) parts.push(s.bearingCount + ' rulman skoru yüksek');
   if(s.staleCount) parts.push(s.staleCount + ' gecikmiş');
   if(s.unconfirmedCount) parts.push(s.unconfirmedCount + ' nokta teyit için tekrar ölçülmeli');
   return parts.length ? '⚠ ' + parts.join(' · ') : '';
@@ -1847,10 +1870,10 @@ function applyAlertRowStyle(rowEl, s){
   if(!subEl) return;
   let color = '';
   if(s.worst === 'D') color = 'var(--red)';
-  else if(s.worst === 'C' || s.worseningCount || s.nearCount) color = 'var(--amber)';
+  else if(s.worst === 'C' || s.worseningCount || s.nearCount || s.bearingCount) color = 'var(--amber)';
   else if(s.staleCount) color = 'var(--text-dim)';
   subEl.style.color = color;
-  subEl.style.fontWeight = (s.worst || s.worseningCount || s.nearCount) ? '700' : '400';
+  subEl.style.fontWeight = (s.worst || s.worseningCount || s.nearCount || s.bearingCount) ? '700' : '400';
 }
 // Ana sayfa (ünite listesi) zaten ekrandayken (örn. uyarı taraması arka
 // planda bittiğinde) satırları yeniden Firestore'dan çekmeden, sadece DOM
@@ -1872,8 +1895,8 @@ async function refreshAlertBadge(){
     log('Uyarı taraması başarısız: ' + err.message, 'warn');
     return;
   }
-  const {zoneCount, worseningCount, nearCount, staleCount, worst} = summarizeAlerts(alertScanResults);
-  const total = zoneCount + worseningCount + nearCount + staleCount;
+  const {zoneCount, worseningCount, nearCount, bearingCount, staleCount, worst} = summarizeAlerts(alertScanResults);
+  const total = zoneCount + worseningCount + nearCount + bearingCount + staleCount;
   const badge = document.getElementById('alertBadge');
   if(total === 0){
     badge.style.display = 'none';
@@ -1884,6 +1907,7 @@ async function refreshAlertBadge(){
     if(zoneCount) parts.push(zoneCount + ' sorunlu nokta');
     if(worseningCount) parts.push(worseningCount + ' kötüleşen');
     if(nearCount) parts.push(nearCount + ' sınıra yakın');
+    if(bearingCount) parts.push(bearingCount + ' rulman skoru yüksek');
     if(staleCount) parts.push(staleCount + ' güncel değil');
     document.getElementById('alertBadgeText').textContent = '⚠ ' + parts.join(' · ');
     document.getElementById('alertBadgeCount').textContent = total;
@@ -1903,7 +1927,7 @@ async function jumpToAlert(r){
   document.getElementById('alertsView').style.display = 'none';
   selUnit = r.unit;
   selTag = r.tag;
-  if(r.kind === 'zone' || r.kind === 'near' || r.kind === 'worsening') historyAxis = r.ax;
+  if(r.kind === 'zone' || r.kind === 'near' || r.kind === 'worsening' || r.kind === 'bearing') historyAxis = r.ax;
   await choosePoint(r.point);
   await showHistoryView();
   if(historyDocsCache.length){
@@ -2394,11 +2418,11 @@ function buildComparisonReportHtml(axesSeries, trend, summaryRows, bearing, char
     </tr>`;
   }).join('');
 
-  const bearingSectionHtml = (bearing && bearing.code) ? `
+  const bearingSectionHtml = ((bearing && bearing.code) ? `
     <h3 style="font-size:13px; margin:16px 0 6px;">Rulman Arıza Frekansları</h3>
     ${buildBearingAnalysisPrintHtml(bearing.code, bearing.rpm, bearing.freqs)}
     <div style="font-size:11px; color:#888; margin-top:4px;">En güncel seçili ölçümün RPM'i (${bearing.rpm ?? '—'}) kullanılarak hesaplanmıştır — farklı ölçümler farklı RPM'de alınmış olabilir.</div>
-  ` : '';
+  ` : '');
 
   const bearingCheckboxesHtml = (bearing && bearing.freqs) ? Object.keys(bearing.freqs).map(key=>{
     const label = { BPFO:'BPFO', BPFI:'BPFI', BSF:'BSF', FTF:'FTF' }[key];
@@ -3967,6 +3991,7 @@ const bearingMarkersPlugin = {
 Chart.register(bearingMarkersPlugin);
 
 function computeResults(){
+  liveSavedToSummary = false;
   const cls = selTag ? isoClass(selTag.kw, selTag.foundation) : null;
   for(const ax of ['X','Y','Z']){
     const s = axisSamples[ax];
@@ -4140,6 +4165,24 @@ function renderScreeningNote(){
     else if(e.near){ items.push(ax+': B/C sınırına yakın ('+cur.toFixed(2)+' / '+e.near.limit+' mm/s)'+(e.near.confirmed?' — önceki ölçüm de öyle':'')); if(!e.near.confirmed) needRepeat = true; }
     if(e.worsening){ items.push(ax+': '+(e.worsening.kind==='baseline'?'ilk ölçümlerdeki taban değere':'son ölçümlerin ortancasına')+' göre '+e.worsening.ratio.toFixed(1)+' kat ('+e.worsening.base.toFixed(2)+' → '+cur.toFixed(2)+' mm/s)'+(e.worsening.confirmed?' — art arda ikinci kez':'')); if(!e.worsening.confirmed) needRepeat = true; severe = true; }
   });
+  // Rulman skoru: bu ölçüm + noktanın kayıtlı son ölçümleri
+  {
+    const ad = (typeof liveAutoDiag === 'function') ? liveAutoDiag() : null;
+    const curB = ad && ad.bfi ? bfiSummaryOf({ X: ad.bfi.X && ad.bfi.X.scores, Y: ad.bfi.Y && ad.bfi.Y.scores, Z: ad.bfi.Z && ad.bfi.Z.scores }) : null;
+    if(curB){
+      const sm = selTag && selTag.lastMeas && selPoint ? selTag.lastMeas[selPoint] : null;
+      let past = recentFromSummary(sm);
+      if(liveSavedToSummary && past.length) past = past.slice(0, -1); // bu ölçüm zaten özete yazıldıysa çift sayma
+      const bt = evaluateBfiTrend(past.concat([{ bfi: curB }]));
+      if(bt){
+        items.push(bt.ax + ': rulman skoru ' + bt.key + ' %' + bt.value.toFixed(0) +
+          (bt.kind === 'rising' ? ' — önceki ölçümlerde %' + bt.base.toFixed(0) + ' civarındaydı' : ' — yüksek') +
+          (bt.confirmed ? ' (önceki ölçüm de öyle, teyitli)' : ''));
+        if(!bt.confirmed) needRepeat = true;
+        severe = true;
+      }
+    }
+  }
   if(!items.length){ el.style.display = 'none'; el.innerHTML = ''; return; }
   const col = severe ? '#ffb238' : '#5ec8ff';
   el.style.display = 'block';
@@ -5327,6 +5370,46 @@ function bearingFaultIndex(envF, envV, bFreqs, shaftHz, mainsHz, estimated){
   return top ? { scores, top, value: scores[top] } : null;
 }
 
+// ---- Rulman skoru taraması (uyarılar ekranı + canlı tarama notu) ----
+// Eşikler tarama amaçlı başlangıç değerleridir (Able'ın alarm seviyeleri sunucuda,
+// görülemiyor): ya skor tek başına yüksek, ya da noktanın önceki ölçümlerine göre
+// belirgin biçimde artmış. Teyit: bir önceki ölçüm de aynı koşulu sağlıyor.
+const BFI_ALERT_HIGH = 60;      // % — tek başına "yüksek"
+const BFI_ALERT_MIN = 30;       // % — "artan" sayılması için asgari seviye
+const BFI_RISE_POINTS = 15;     // önceki ölçümlerin ortancasına göre en az bu kadar puan artış
+// Eksen başına skorlar ({X:{BPFO,BPFI,BSF}, …}) → en yüksek {value, ax, key} | null
+function bfiSummaryOf(byAxis){
+  if(!byAxis) return null;
+  let best = null;
+  ['X','Y','Z'].forEach(ax=>{
+    const s = byAxis[ax];
+    if(!s) return;
+    BFI_KEYS.forEach(k=>{
+      const v = s[k];
+      if(v != null && isFinite(v) && (!best || v > best.value)) best = { value:v, ax, key:k };
+    });
+  });
+  return best;
+}
+// recent: [{velRMS, bfi:{value,ax,key}|null}, …] (eskiden yeniye). Dönüş: null | {kind, value, ax, key, base, confirmed}
+function evaluateBfiTrend(recent){
+  if(!recent || !recent.length) return null;
+  const val = (i)=> (recent[i] && recent[i].bfi && recent[i].bfi.value != null) ? recent[i].bfi.value : null;
+  const hitAt = (i)=>{
+    const cur = val(i);
+    if(i < 0 || cur == null) return null;
+    const prior = []; for(let k=0;k<i;k++){ const v = val(k); if(v != null) prior.push(v); }
+    const base = medianOfNums(prior);
+    if(cur >= BFI_ALERT_HIGH) return { kind:'high', base };
+    if(base != null && cur >= BFI_ALERT_MIN && cur - base >= BFI_RISE_POINTS) return { kind:'rising', base };
+    return null;
+  };
+  const n = recent.length, h = hitAt(n-1);
+  if(!h) return null;
+  const b = recent[n-1].bfi;
+  return { kind:h.kind, value:b.value, ax:b.ax, key:b.key, base:h.base, confirmed: !!hitAt(n-2) };
+}
+
 function lineLabel(c){ return (c.h===1 ? '' : c.h+'×') + c.key; }
 
 // Şebeke (n×50 Hz) veya mil harmoniği (n×devir) ile aynı frekans mı?
@@ -6030,6 +6113,39 @@ function buildReportHeaderTableHtml(meta){
     </table>`;
 }
 
+// Rapor için otomatik tanı + rulman skoru + sensör yönü tablosu (açık zemin).
+function buildDiagPrintHtml(meta){
+  const d = meta && meta.diag;
+  if(!d || (!d.axes && !d.bfi)) return '';
+  const th = 'padding:6px; border:1px solid #ccc; text-align:left; font-size:12px;';
+  const td = 'padding:6px; border:1px solid #ccc; font-size:12px;';
+  const cats = ['unbalance','misalignment','looseness','other'];
+  let rows = '';
+  ['X','Y','Z'].forEach(ax=>{
+    const p = d.axes && d.axes[ax];
+    const b = d.bfi && d.bfi[ax];
+    if(!p && !b) return;
+    const role = axisRoleOf(ax, d.orient);
+    const tot = p ? cats.reduce((s,k)=>s + (p[k]||0), 0) : null;
+    const cell = (k)=> p ? `${(p[k]||0).toFixed(2)} <span style="color:#888">(%${tot > 0 ? Math.round((p[k]||0)/tot*100) : 0})</span>` : '—';
+    let bTxt = '—';
+    if(b){ const top = BFI_KEYS.filter(k=>b[k] != null).sort((x,y)=>b[y]-b[x])[0]; bTxt = BFI_KEYS.filter(k=>b[k] != null).map(k=> k===top ? `<b>${k} %${b[k].toFixed(0)}</b>` : `${k} %${b[k].toFixed(0)}`).join(' · '); }
+    rows += `<tr><td style="${td}"><b>${ax}</b>${role ? ' · '+AXIS_ROLE_LABELS[role] : ''}</td><td style="${td}">${tot != null ? tot.toFixed(2) : '—'}</td>
+      ${cats.map(k=>`<td style="${td}">${cell(k)}</td>`).join('')}<td style="${td}">${bTxt}</td></tr>`;
+  });
+  if(!rows) return '';
+  const axialChk = d.axes ? axialMisalignmentCheck(Object.fromEntries(['X','Y','Z'].filter(a=>d.axes[a]).map(a=>[a,{parts:d.axes[a]}])), d.orient) : null;
+  return `
+    <h2 style="font-size:15px; margin:20px 0 6px;">Otomatik Tanı ve Rulman Skoru</h2>
+    <div style="font-size:11.5px; color:#555; margin-bottom:6px; line-height:1.5;">Toplam hız (mm/s) spektrumdaki yerine göre paylara bölünmüştür: Dengesizlik = 1× devir, Hizalama = 2×, Gevşeklik = 3×–10× ve ½× katları, Diğer = devirden bağımsız (şebeke, rulman, akış…). Rulman skoru (BFI %): zarf spektrumunda BPFO/BPFI/BSF frekanslarında gürültünün üstünde biriken enerjinin payı; tek değerden çok ölçümden ölçüme artışı önemlidir.${d.shaftNote ? ' ' + d.shaftNote : ''}</div>
+    <table style="width:100%; border-collapse:collapse;">
+      <tr style="background:#eee;"><th style="${th}">Eksen</th><th style="${th}">Toplam</th><th style="${th}">Dengesizlik</th><th style="${th}">Hizalama</th><th style="${th}">Gevşeklik</th><th style="${th}">Diğer</th><th style="${th}">Rulman skoru</th></tr>
+      ${rows}
+    </table>
+    ${axialChk ? `<div style="font-size:12px; margin-top:6px; padding:6px 8px; border:1px solid #d9a400; background:#fff8e0; border-radius:4px;"><b>Eksenel 1× yüksek:</b> eksenel yöndeki (${d.orient.axial}) 1× hız radyal 1×'in %${Math.round(axialChk.ratio*100)}'i — hizalama bozukluğu / eğik mil olasılığı; kaplin hizasını kontrol edin.</div>` : ''}
+    ${!d.orient ? '<div style="font-size:11px; color:#888; margin-top:4px;">Sensör yönü (eksenel/dikey) bu nokta için tanımlanmamış.</div>' : ''}`;
+}
+
 function buildPrintReportHtml(chartImages, meta, bearing){
   const now = new Date();
   const stamp = now.toLocaleString('tr-TR');
@@ -6077,6 +6193,8 @@ function buildPrintReportHtml(chartImages, meta, bearing){
       </tr>
       ${rowsHtml}
     </table>
+
+    ${buildDiagPrintHtml(meta)}
 
     ${bearing && bearing.code ? `
     <h2 style="font-size:15px; margin:20px 0 8px;">Rulman Arıza Frekansları</h2>
@@ -6132,6 +6250,20 @@ function gatherReportContext(){
   const rpmForBearing = meta.rpm && meta.rpm !== '—' ? parseFloat(meta.rpm) : null;
   const bFreqs = computeBearingFrequencies(bearingCode, rpmForBearing);
   const bearing = { code: bearingCode, rpm: rpmForBearing, freqs: bFreqs };
+  // Otomatik tanı + rulman skoru + sensör yönü (rapor tablosu için)
+  try{
+    const orient = currentOrientation();
+    if(hasLive){
+      const ad = liveAutoDiag();
+      meta.diag = { orient,
+        axes: ad.axes ? Object.fromEntries(['X','Y','Z'].filter(a=>ad.axes[a]).map(a=>[a, ad.axes[a].parts])) : null,
+        bfi: ad.bfi ? Object.fromEntries(['X','Y','Z'].map(a=>[a, ad.bfi[a] ? ad.bfi[a].scores : null])) : null,
+        shaftNote: ad.shaftHz ? `Devir: ${(ad.shaftHz*60).toFixed(0)} rpm${ad.estimated ? ' (spektrumdan ölçüldü)' : ' (girilen)'}.` : '' };
+    } else if(lastHistoricalDoc){
+      const doc = lastHistoricalDoc;
+      meta.diag = { orient, axes: doc.autoDiag || null, bfi: bearingCode ? bfiForDoc(doc, bearingCode) : null, shaftNote: '' };
+    }
+  }catch(e){ meta.diag = null; }
   return { getSpec, getEnvSpec, meta, bearing };
 }
 
@@ -6250,11 +6382,11 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
   const stamp = now.toLocaleString('tr-TR');
   const axesPresent = ['X','Y','Z'].filter(ax=>axesData[ax]);
 
-  const bearingSectionHtml = (bearing && bearing.code) ? `
+  const bearingSectionHtml = ((bearing && bearing.code) ? `
     <h3 style="font-size:13px; margin:16px 0 6px;">Rulman Arıza Frekansları</h3>
     ${buildBearingAnalysisPrintHtml(bearing.code, bearing.rpm, bearing.freqs)}
     <div style="font-size:11px; color:#888; margin-top:4px;">Bu frekanslar aşağıdaki PSD ve Zarf grafiklerinde renkli kesikli çizgiler olarak işaretlenir — her grafiğin hemen üstündeki düğmelerle ayrı ayrı açıp kapatabilirsiniz.</div>
-  ` : '';
+  ` : '');
 
   const bearingCheckboxesHtml = (bearing && bearing.freqs) ? Object.keys(bearing.freqs).map(key=>{
     const label = { BPFO:'BPFO', BPFI:'BPFI', BSF:'BSF', FTF:'FTF' }[key];
@@ -6338,6 +6470,7 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
     </tr>
     ${rowsHtml}
   </table>
+  ${buildDiagPrintHtml(meta)}
 
 
   <h2 style="font-size:15px; margin:20px 0 4px;">Spektrum Grafikleri</h2>

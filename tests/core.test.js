@@ -23,13 +23,13 @@ for(const file of APP_FILES){
   const api = load(file, {
     // assessSignalQuality global axisSamples'ı okur; testten doldurabilmek için erişimci.
     prelude: 'var SAMPLE_RATE_HZ = 6510; var SCALE_G_PER_LSB = 0.0006104; var axisSamples = {}; function getAxisSamples(){ return axisSamples; }',
-    exports: ['getAxisSamples'],
+    exports: ['getAxisSamples', 'shaftFaultBreakdown', 'estimateMainsBase', 'bearingFaultIndex', 'axisRoleOf', 'axialMisalignmentCheck', 'bfiSummaryOf', 'evaluateBfiTrend'],
     names: ['parseSensorSampleRate', 'nextPow2', 'fft', 'ifft', 'computePSD', 'envelopeSpectrum',
       'velocitySpectrumFromAccelPSD', 'rmsAccelFromPSD', 'downsampleSpectrum',
       'ISO_ZONES', 'isoClass', 'isoEvaluate', 'ISO_BASIS_TEXT', 'isoLowSpeedNote',
       'escapeHtml', 'findSeqGaps', 'ENV_SPEC_F_MAX',
       'Q_CLIP_LSB', 'Q_CLIP_MIN_COUNT', 'Q_FLAT_STD_LSB', 'Q_STUCK_RUN', 'Q_SPIKE_LSB', 'Q_LEN_MISMATCH',
-      'assessSignalQuality'],
+      'assessSignalQuality', 'medianOfNums'],
     regions: [['const MAINS_HZ', 'analyzeBearing']],
   });
 
@@ -78,16 +78,23 @@ for(const file of APP_FILES){
     assert.ok(Math.abs(freqs[peak] - 87) < 1, `zarf tepesi ${freqs[peak].toFixed(2)} Hz`);
   });
 
-  test(`${file}: ISO sınıfı ve bölge sınırları`, () => {
-    assert.equal(api.isoClass(11, 'rijit'), 'I');
-    assert.equal(api.isoClass(55, 'rijit'), 'II');
-    assert.equal(api.isoClass(110, 'rijit'), 'III');
-    assert.equal(api.isoClass(110, 'esnek'), 'IV');
+  test(`${file}: ISO 10816-3 grup/temel ve bölge sınırları`, () => {
+    assert.equal(api.isoClass(11, 'rijit'), 'I', '≤15 kW → 10816-1 Sınıf I');
+    assert.equal(api.isoClass(15, 'esnek'), 'I');
+    assert.equal(api.isoClass(55, 'rijit'), 'G2R');
+    assert.equal(api.isoClass(300, 'esnek'), 'G2F');
+    assert.equal(api.isoClass(315, 'rijit'), 'G1R');
+    assert.equal(api.isoClass(800, 'esnek'), 'G1F');
     assert.equal(api.isoClass(null), null);
-    assert.equal(api.isoEvaluate(1.12, 'II').zone, 'A', 'sınır dahil');
-    assert.equal(api.isoEvaluate(1.13, 'II').zone, 'B');
-    assert.equal(api.isoEvaluate(7.1, 'II').zone, 'C');
-    assert.equal(api.isoEvaluate(7.2, 'II').zone, 'D');
+    // ISO 10816-3 Tablo A.1 / A.2 (mm/s RMS)
+    assert.deepEqual(Array.from(api.ISO_ZONES.G2R), [1.4, 2.8, 4.5]);
+    assert.deepEqual(Array.from(api.ISO_ZONES.G2F), [2.3, 4.5, 7.1]);
+    assert.deepEqual(Array.from(api.ISO_ZONES.G1R), [2.3, 4.5, 7.1]);
+    assert.deepEqual(Array.from(api.ISO_ZONES.G1F), [3.5, 7.1, 11.0]);
+    assert.equal(api.isoEvaluate(1.4, 'G2R').zone, 'A', 'sınır dahil');
+    assert.equal(api.isoEvaluate(1.41, 'G2R').zone, 'B');
+    assert.equal(api.isoEvaluate(4.5, 'G2R').zone, 'C');
+    assert.equal(api.isoEvaluate(4.6, 'G2R').zone, 'D');
     assert.equal(api.isoEvaluate(3, null), null);
   });
 
@@ -95,7 +102,7 @@ for(const file of APP_FILES){
     assert.match(api.isoLowSpeedNote('450'), /600 rpm altı/);
     assert.equal(api.isoLowSpeedNote('1449'), '');
     assert.equal(api.isoLowSpeedNote('—'), '');
-    assert.match(api.ISO_BASIS_TEXT, /10816-1/);
+    assert.match(api.ISO_BASIS_TEXT, /10816-3/);
   });
 
   test(`${file}: HTML kaçışı`, () => {
@@ -132,5 +139,93 @@ for(const file of APP_FILES){
     const fault = level(signal((t) => g() + sine(87.3, 0.15)(t) + sine(174.6, 0.1)(t)));
     assert.ok(fault.level >= 2, `arıza seviyesi ${fault.level}`);
     assert.equal(fault.perKey.slice().sort((a, b) => b.level - a.level)[0].key, 'BPFO');
+  });
+
+  test(`${file}: otomatik tanı payları doğru kaynağa gidiyor ve toplamı OVL'ye eşit`, () => {
+    const fr = 24.6; // 1476 rpm
+    // İvme genliğini (g), istenen hız tepe değerinden (mm/s) üret.
+    const accFor = (f, vPeakMms) => vPeakMms / 1000 * 2 * Math.PI * f / G;
+    const run = (comps, seed) => {
+      const g = rng(seed);
+      const x = signal((t) => 0.002 * g() + comps.reduce((s, [f, v]) => s + sine(f, accFor(f, v))(t), 0));
+      const { freqs, psd } = api.computePSD(x, FS);
+      const { velAmp, rmsVelocity } = api.velocitySpectrumFromAccelPSD(freqs, psd, 10, 1000);
+      const r = api.shaftFaultBreakdown(freqs, velAmp, fr, 50, rmsVelocity);
+      const sum = r.parts.unbalance + r.parts.misalignment + r.parts.looseness + r.parts.other;
+      assert.ok(Math.abs(sum - rmsVelocity) < 0.03, `paylar toplamı ${sum} ≠ OVL ${rmsVelocity}`);
+      return r;
+    };
+    const unb = run([[fr, 6], [2 * fr, 1]], 11);
+    assert.equal(unb.dominant, 'unbalance');
+    assert.ok(unb.shares.unbalance > 0.85, `dengesizlik payı ${unb.shares.unbalance}`);
+    const mis = run([[fr, 1.5], [2 * fr, 5], [3 * fr, 1]], 12);
+    assert.equal(mis.dominant, 'misalignment');
+    const loose = run([[fr, 1], [1.5 * fr, 2], [3 * fr, 3], [4 * fr, 2.5], [5 * fr, 2]], 13);
+    assert.equal(loose.dominant, 'looseness');
+    // Devirle ilgisiz tepe (rulman 87.3 Hz + şebeke 100 Hz) → "diğer".
+    const oth = run([[87.3, 4], [100, 3], [fr, 0.5]], 14);
+    assert.equal(oth.dominant, null);
+    assert.ok(oth.shares.other > 0.8, `diğer payı ${oth.shares.other}`);
+    // 2× devir şebekeyle iç içe (24.9 Hz → 49.8 Hz): saf 50 Hz şebeke çizgisi hizalama sayılmamalı.
+    const g = rng(15);
+    const xm = signal((t) => 0.002 * g() + sine(50, accFor(50, 4))(t));
+    const sp = api.computePSD(xm, FS);
+    const vm2 = api.velocitySpectrumFromAccelPSD(sp.freqs, sp.psd, 10, 1000);
+    const rm = api.shaftFaultBreakdown(sp.freqs, vm2.velAmp, 24.9, 50, vm2.rmsVelocity);
+    assert.notEqual(rm.dominant, 'misalignment', `şebeke çizgisi hizalama sanıldı (${rm.shares.misalignment})`);
+    assert.equal(api.shaftFaultBreakdown(sp.freqs, vm2.velAmp, null, 50, 1), null, 'devir yoksa null');
+  });
+
+  test(`${file}: rulman skoru (BFI) gürültüde düşük, BPFO darbelerinde yüksek`, () => {
+    const bF = { BPFO: 87.3, BPFI: 129.4, BSF: 57.1, FTF: 9.7 };
+    const fr = 24.4;
+    const bfi = (x) => {
+      const { freqs, amp } = api.envelopeSpectrum(x, FS, 1300, 2800);
+      const d = api.downsampleSpectrum(freqs, amp, 200, 0, api.ENV_SPEC_F_MAX, 'max'); // kayıt biçimi
+      return api.bearingFaultIndex(d.f, d.v, bF, fr, 50, true);
+    };
+    const g = rng(21);
+    const noise = bfi(signal(() => 0.05 * g()));
+    assert.ok(noise.value < 8, `gürültüde BFI ${noise.value}`);
+    // BPFO hızında tekrarlanan, 2 kHz'de çınlayan darbeler (dış bilezik hasarı modeli)
+    const g2 = rng(22);
+    const T = 1 / 87.3;
+    const fault = bfi(signal((t) => {
+      const tau = t % T;
+      return 0.05 * g2() + 0.6 * Math.exp(-tau * 900) * Math.sin(2 * Math.PI * 2000 * tau);
+    }));
+    assert.equal(fault.top, 'BPFO');
+    assert.ok(fault.value > 40, `arızada BPFO skoru ${fault.value}`);
+    assert.ok(fault.scores.BPFI < fault.value / 3, `BPFI ${fault.scores.BPFI}`);
+    assert.equal(api.bearingFaultIndex(null, null, bF, fr, 50, true), null);
+  });
+
+  test(`${file}: sensör yönelimi ve eksenel 1× kuralı`, () => {
+    const o = { axial: 'Z', vertical: 'X' };
+    assert.equal(api.axisRoleOf('Z', o), 'axial');
+    assert.equal(api.axisRoleOf('X', o), 'vertical');
+    assert.equal(api.axisRoleOf('Y', o), 'horizontal');
+    assert.equal(api.axisRoleOf('Y', { axial: 'Z', vertical: null }), null, 'dikey bilinmiyorsa kalan eksen belirsiz');
+    assert.equal(api.axisRoleOf('X', null), null);
+    const ax = (u) => ({ parts: { unbalance: u, misalignment: 0, looseness: 0, other: 0 } });
+    const hit = api.axialMisalignmentCheck({ X: ax(3), Y: ax(2), Z: ax(2.1) }, o);
+    assert.ok(hit && Math.abs(hit.ratio - 0.7) < 1e-9, 'eksenel 1× radyalin %70’i → uyarı');
+    assert.equal(api.axialMisalignmentCheck({ X: ax(3), Y: ax(2), Z: ax(0.6) }, o), null, 'eksenel düşük → saf dengesizlik');
+    assert.equal(api.axialMisalignmentCheck({ X: ax(0.6), Y: ax(0.5), Z: ax(0.4) }, o), null, 'çok düşük seviye yorumlanmaz');
+    assert.equal(api.axialMisalignmentCheck({ X: ax(3), Y: ax(2), Z: ax(3) }, null), null, 'yönelim yok');
+  });
+
+  test(`${file}: rulman skoru uyarı kuralı (yüksek / artan / teyit)`, () => {
+    const s = api.bfiSummaryOf({ X: { BPFO: 12, BPFI: 3, BSF: 0 }, Y: null, Z: { BPFO: 2, BPFI: 41, BSF: 5 } });
+    assert.deepEqual({ ...s }, { value: 41, ax: 'Z', key: 'BPFI' });
+    assert.equal(api.bfiSummaryOf(null), null);
+    const r = (...vals) => vals.map(v => ({ bfi: v == null ? null : { value: v, ax: 'X', key: 'BPFO' } }));
+    assert.equal(api.evaluateBfiTrend(r(5, 8, 6, 10)), null, 'düşük ve sabit');
+    const rising = api.evaluateBfiTrend(r(5, 8, 6, 35));
+    assert.equal(rising.kind, 'rising'); assert.equal(rising.confirmed, false);
+    assert.equal(api.evaluateBfiTrend(r(5, 8, 32, 36)).confirmed, true, 'art arda ikinci artış teyitli');
+    assert.equal(api.evaluateBfiTrend(r(25, 28, 30, 38)), null, 'zaten yüksek seyreden, 15 puan artmamış');
+    assert.equal(api.evaluateBfiTrend(r(65)).kind, 'high', 'ilk ölçümde bile %60 üstü');
+    assert.equal(api.evaluateBfiTrend(r(null, null, 50)), null, 'geçmişi yok, %60 altında');
   });
 }

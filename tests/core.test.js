@@ -23,7 +23,7 @@ for(const file of APP_FILES){
   const api = load(file, {
     // assessSignalQuality global axisSamples'ı okur; testten doldurabilmek için erişimci.
     prelude: 'var SAMPLE_RATE_HZ = 6510; var SCALE_G_PER_LSB = 0.0006104; var axisSamples = {}; function getAxisSamples(){ return axisSamples; }',
-    exports: ['getAxisSamples', 'shaftFaultBreakdown', 'estimateMainsBase'],
+    exports: ['getAxisSamples', 'shaftFaultBreakdown', 'estimateMainsBase', 'bearingFaultIndex', 'axisRoleOf', 'axialMisalignmentCheck'],
     names: ['parseSensorSampleRate', 'nextPow2', 'fft', 'ifft', 'computePSD', 'envelopeSpectrum',
       'velocitySpectrumFromAccelPSD', 'rmsAccelFromPSD', 'downsampleSpectrum',
       'ISO_ZONES', 'isoClass', 'isoEvaluate', 'ISO_BASIS_TEXT', 'isoLowSpeedNote',
@@ -167,5 +167,44 @@ for(const file of APP_FILES){
     const rm = api.shaftFaultBreakdown(sp.freqs, vm2.velAmp, 24.9, 50, vm2.rmsVelocity);
     assert.notEqual(rm.dominant, 'misalignment', `şebeke çizgisi hizalama sanıldı (${rm.shares.misalignment})`);
     assert.equal(api.shaftFaultBreakdown(sp.freqs, vm2.velAmp, null, 50, 1), null, 'devir yoksa null');
+  });
+
+  test(`${file}: rulman skoru (BFI) gürültüde düşük, BPFO darbelerinde yüksek`, () => {
+    const bF = { BPFO: 87.3, BPFI: 129.4, BSF: 57.1, FTF: 9.7 };
+    const fr = 24.4;
+    const bfi = (x) => {
+      const { freqs, amp } = api.envelopeSpectrum(x, FS, 1300, 2800);
+      const d = api.downsampleSpectrum(freqs, amp, 200, 0, api.ENV_SPEC_F_MAX, 'max'); // kayıt biçimi
+      return api.bearingFaultIndex(d.f, d.v, bF, fr, 50, true);
+    };
+    const g = rng(21);
+    const noise = bfi(signal(() => 0.05 * g()));
+    assert.ok(noise.value < 8, `gürültüde BFI ${noise.value}`);
+    // BPFO hızında tekrarlanan, 2 kHz'de çınlayan darbeler (dış bilezik hasarı modeli)
+    const g2 = rng(22);
+    const T = 1 / 87.3;
+    const fault = bfi(signal((t) => {
+      const tau = t % T;
+      return 0.05 * g2() + 0.6 * Math.exp(-tau * 900) * Math.sin(2 * Math.PI * 2000 * tau);
+    }));
+    assert.equal(fault.top, 'BPFO');
+    assert.ok(fault.value > 40, `arızada BPFO skoru ${fault.value}`);
+    assert.ok(fault.scores.BPFI < fault.value / 3, `BPFI ${fault.scores.BPFI}`);
+    assert.equal(api.bearingFaultIndex(null, null, bF, fr, 50, true), null);
+  });
+
+  test(`${file}: sensör yönelimi ve eksenel 1× kuralı`, () => {
+    const o = { axial: 'Z', vertical: 'X' };
+    assert.equal(api.axisRoleOf('Z', o), 'axial');
+    assert.equal(api.axisRoleOf('X', o), 'vertical');
+    assert.equal(api.axisRoleOf('Y', o), 'horizontal');
+    assert.equal(api.axisRoleOf('Y', { axial: 'Z', vertical: null }), null, 'dikey bilinmiyorsa kalan eksen belirsiz');
+    assert.equal(api.axisRoleOf('X', null), null);
+    const ax = (u) => ({ parts: { unbalance: u, misalignment: 0, looseness: 0, other: 0 } });
+    const hit = api.axialMisalignmentCheck({ X: ax(3), Y: ax(2), Z: ax(2.1) }, o);
+    assert.ok(hit && Math.abs(hit.ratio - 0.7) < 1e-9, 'eksenel 1× radyalin %70’i → uyarı');
+    assert.equal(api.axialMisalignmentCheck({ X: ax(3), Y: ax(2), Z: ax(0.6) }, o), null, 'eksenel düşük → saf dengesizlik');
+    assert.equal(api.axialMisalignmentCheck({ X: ax(0.6), Y: ax(0.5), Z: ax(0.4) }, o), null, 'çok düşük seviye yorumlanmaz');
+    assert.equal(api.axialMisalignmentCheck({ X: ax(3), Y: ax(2), Z: ax(3) }, null), null, 'yönelim yok');
   });
 }

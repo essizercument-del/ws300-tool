@@ -78,16 +78,23 @@ for(const file of APP_FILES){
     assert.ok(Math.abs(freqs[peak] - 87) < 1, `zarf tepesi ${freqs[peak].toFixed(2)} Hz`);
   });
 
-  test(`${file}: ISO sınıfı ve bölge sınırları`, () => {
-    assert.equal(api.isoClass(11, 'rijit'), 'I');
-    assert.equal(api.isoClass(55, 'rijit'), 'II');
-    assert.equal(api.isoClass(110, 'rijit'), 'III');
-    assert.equal(api.isoClass(110, 'esnek'), 'IV');
+  test(`${file}: ISO 10816-3 grup/temel ve bölge sınırları`, () => {
+    assert.equal(api.isoClass(11, 'rijit'), 'I', '≤15 kW → 10816-1 Sınıf I');
+    assert.equal(api.isoClass(15, 'esnek'), 'I');
+    assert.equal(api.isoClass(55, 'rijit'), 'G2R');
+    assert.equal(api.isoClass(300, 'esnek'), 'G2F');
+    assert.equal(api.isoClass(315, 'rijit'), 'G1R');
+    assert.equal(api.isoClass(800, 'esnek'), 'G1F');
     assert.equal(api.isoClass(null), null);
-    assert.equal(api.isoEvaluate(1.12, 'II').zone, 'A', 'sınır dahil');
-    assert.equal(api.isoEvaluate(1.13, 'II').zone, 'B');
-    assert.equal(api.isoEvaluate(7.1, 'II').zone, 'C');
-    assert.equal(api.isoEvaluate(7.2, 'II').zone, 'D');
+    // ISO 10816-3 Tablo A.1 / A.2 (mm/s RMS)
+    assert.deepEqual(Array.from(api.ISO_ZONES.G2R), [1.4, 2.8, 4.5]);
+    assert.deepEqual(Array.from(api.ISO_ZONES.G2F), [2.3, 4.5, 7.1]);
+    assert.deepEqual(Array.from(api.ISO_ZONES.G1R), [2.3, 4.5, 7.1]);
+    assert.deepEqual(Array.from(api.ISO_ZONES.G1F), [3.5, 7.1, 11.0]);
+    assert.equal(api.isoEvaluate(1.4, 'G2R').zone, 'A', 'sınır dahil');
+    assert.equal(api.isoEvaluate(1.41, 'G2R').zone, 'B');
+    assert.equal(api.isoEvaluate(4.5, 'G2R').zone, 'C');
+    assert.equal(api.isoEvaluate(4.6, 'G2R').zone, 'D');
     assert.equal(api.isoEvaluate(3, null), null);
   });
 
@@ -95,7 +102,7 @@ for(const file of APP_FILES){
     assert.match(api.isoLowSpeedNote('450'), /600 rpm altı/);
     assert.equal(api.isoLowSpeedNote('1449'), '');
     assert.equal(api.isoLowSpeedNote('—'), '');
-    assert.match(api.ISO_BASIS_TEXT, /10816-1/);
+    assert.match(api.ISO_BASIS_TEXT, /10816-3/);
   });
 
   test(`${file}: HTML kaçışı`, () => {

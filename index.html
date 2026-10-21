@@ -503,7 +503,7 @@ db.enablePersistence({ synchronizeTabs: true }).catch(err=>{
   <div class="modal-box">
     <h3 id="tagModalTitle">Tag ekle</h3>
     <input type="text" id="tagModalName" placeholder="İsim (örn. 1.1-zone1)">
-    <input type="number" id="tagModalKw" placeholder="Motor gücü (kW)">
+    <input type="number" id="tagModalKw" placeholder="Motor gücü (kW) — ISO 10816-3 grubu buna göre">
     <select id="tagModalFoundation" style="width:100%; background:var(--bg); border:1px solid var(--line); border-radius:8px; color:var(--text); padding:10px 12px; font-size:14px; margin-bottom:12px;">
       <option value="rijit">Temel: Rijit / ağır</option>
       <option value="esnek">Temel: Esnek / hafif</option>
@@ -619,7 +619,7 @@ db.enablePersistence({ synchronizeTabs: true }).catch(err=>{
   </div>
 
   <div class="panel">
-    <div class="panel-title">Hız Spektrumu <span class="tag">mm/s vs Hz — genel şiddet (ISO 10816)</span> <button class="btn-mini" id="btnResetZoomVel" type="button">Yakınlaştırmayı sıfırla</button></div>
+    <div class="panel-title">Hız Spektrumu <span class="tag">mm/s vs Hz — genel şiddet (ISO 10816-3)</span> <button class="btn-mini" id="btnResetZoomVel" type="button">Yakınlaştırmayı sıfırla</button></div>
     <div class="vp-controls" id="velControls"></div>
     <div style="position:relative; height:240px;"><canvas id="chartDetailVel"></canvas></div>
     <div class="vp-readout" id="velReadout"></div>
@@ -629,7 +629,7 @@ db.enablePersistence({ synchronizeTabs: true }).catch(err=>{
   </div>
 
   <div class="panel" id="isoAnalysisPanel">
-    <div class="panel-title">ISO 10816 Analizi</div>
+    <div class="panel-title">ISO 10816-3 Analizi</div>
     <div id="isoAnalysisText" style="font-size:13px; line-height:1.6; color:var(--text);"></div>
   </div>
 
@@ -986,7 +986,7 @@ async function renderSelectView(){
     }
     rows.forEach(({t, i, s})=>{
       const cls = isoClass(t.kw, t.foundation);
-      const baseSub = (t.kw ? t.kw+' kW · ' : '') + (cls ? 'Class '+cls : 'sınıf tanımsız');
+      const baseSub = (t.kw ? t.kw+' kW · ' : '') + (cls ? ISO_CLASS_SHORT[cls] : 'ISO grubu tanımsız');
       const alertSub = formatAlertSummaryText(s);
       const sub = alertSub ? baseSub + ' · ' + alertSub : baseSub;
       const row = buildRow(t.name, sub, {
@@ -1147,9 +1147,14 @@ function escapeHtml(v){
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-// ---- ISO 10816 sınıf ve değerlendirme ----
-// Rapor ve analiz ekranında değerlendirmenin dayanağı (hangi standart, hangi bant).
-const ISO_BASIS_TEXT = 'Değerlendirme: ISO 10816-1 Ek B genel sınıf sınırları, 10–1000 Hz hız RMS. ISO 10816 serisinin yerini ISO 20816 almıştır; sınırlar genel kılavuz niteliğindedir.';
+// ---- ISO 10816-3 makine grubu ve değerlendirme ----
+// Able Handy de bu standardı kullanıyor (makine boyutu + rijit/esnek temel).
+// ISO 10816-3: 15 kW üstü, 120–15000 rpm endüstriyel makineler.
+//   Grup 2: 15 kW < P ≤ 300 kW (elektrik motorlarında mil yüksekliği 160–315 mm)
+//   Grup 1: 300 kW < P < 50 MW (mil yüksekliği ≥ 315 mm)
+// 15 kW ve altı 10816-3 kapsamında değildir; onlar için ISO 10816-1 Sınıf I sınırları kullanılır.
+// Grup, motor gücünden (kW) belirlenir; mil yüksekliği sorulmaz.
+const ISO_BASIS_TEXT = 'Değerlendirme: ISO 10816-3 (15 kW üstü endüstriyel makineler, makine grubu + temel tipi), 10–1000 Hz hız RMS; 15 kW ve altı için ISO 10816-1 Sınıf I. ISO 10816 serisinin yerini ISO 20816 almıştır; sınırlar genel kılavuz niteliğindedir.';
 // 600 rpm altında 1× devir frekansı 10 Hz'in altına düşer ve 10–1000 Hz bandına
 // girmez; standart bu makineler için 2–1000 Hz öngörür. Bant bilerek değiştirilmiyor
 // (≈2 sn'lik kayıtta ivmeden hıza çevirirken 10 Hz altı gürültü büyür), uyarı veriliyor.
@@ -1158,18 +1163,24 @@ function isoLowSpeedNote(rpm){
   if(!(r > 0) || r >= 600) return '';
   return `Devir ${Math.round(r)} rpm (600 rpm altı): 1× devir frekansı ${(r/60).toFixed(1)} Hz, ölçüm bandının (10–1000 Hz) altında kalıyor. Standart bu makineler için 2–1000 Hz öngörür; gösterilen RMS ve bölge olduğundan düşük olabilir.`;
 }
+// Dönüş: 'I' (≤15 kW) | 'G2R' | 'G2F' | 'G1R' | 'G1F'  (G=grup, R=rijit, F=esnek)
 function isoClass(kw, foundation){
   if(!kw) return null;
   if(kw <= 15) return 'I';
-  if(kw <= 75) return 'II';
-  return foundation === 'esnek' ? 'IV' : 'III';
+  const f = foundation === 'esnek' ? 'F' : 'R';
+  return (kw <= 300 ? 'G2' : 'G1') + f;
 }
 // Zone sınırları (mm/s RMS): [A/B sınırı, B/C sınırı, C/D sınırı]
 const ISO_ZONES = {
-  'I':  [0.71, 1.8, 4.5],
-  'II': [1.12, 2.8, 7.1],
-  'III':[1.8,  4.5, 11.2],
-  'IV': [2.8,  7.1, 18.0]
+  'I':   [0.71, 1.8, 4.5],   // ISO 10816-1 Sınıf I
+  'G2R': [1.4,  2.8, 4.5],   // ISO 10816-3 Grup 2, rijit
+  'G2F': [2.3,  4.5, 7.1],   // ISO 10816-3 Grup 2, esnek
+  'G1R': [2.3,  4.5, 7.1],   // ISO 10816-3 Grup 1, rijit
+  'G1F': [3.5,  7.1, 11.0],  // ISO 10816-3 Grup 1, esnek
+  // Eski (10816-1) kayıtlar için — yeni değerlendirmede kullanılmaz
+  'II':  [1.12, 2.8, 7.1],
+  'III': [1.8,  4.5, 11.2],
+  'IV':  [2.8,  7.1, 18.0]
 };
 function isoEvaluate(rmsVelocity, cls){
   if(!cls || !ISO_ZONES[cls]) return null;
@@ -1180,21 +1191,25 @@ function isoEvaluate(rmsVelocity, cls){
   return {zone:'D', label:'Tehlikeli', color:'#ff5d5d'};
 }
 
-// ISO 10816 bölge tanımlarına dayalı, her bölge için uzun açıklama.
+// ISO 10816-3 bölge tanımlarına dayalı, her bölge için uzun açıklama.
 const ISO_ZONE_DESCRIPTIONS = {
   A: 'Yeni devreye alınmış bir makineden beklenen tipik titreşim seviyesi. Herhangi bir aksiyon gerekmez, mevcut durumda çalışmaya devam edilebilir.',
   B: 'Titreşim seviyesi, makinenin sınırsız süreyle uzun vadeli çalışması için genellikle kabul edilebilir kabul edilir. Rutin izlemeye devam edilmesi yeterlidir.',
   C: 'Titreşim seviyesi, uzun süreli sürekli çalışma için normalde tatmin edici değildir. Makine, uygun bir bakım fırsatı bulunana kadar sınırlı bir süre bu durumda çalıştırılabilir; kök nedenin (dengesizlik, hizasızlık, rulman/yatak aşınması vb.) araştırılması önerilir.',
   D: 'Titreşim seviyesi, makinede hasara yol açacak kadar şiddetli kabul edilir. Mümkün olan en kısa sürede inceleme ve düzeltici bakım yapılması gerekir.'
 };
-// Sınıf açıklamaları. ISO_ZONES sınırları ISO 10816-1 Ek B'deki genel sınıf
-// tablosudur (I–IV); 10816-3'ün kendi grup/temel tablosu farklıdır.
 const ISO_CLASS_LABELS = {
-  I:   'Sınıf I — Küçük makineler (≤15 kW)',
-  II:  'Sınıf II — Orta boy makineler (15-75 kW)',
-  III: 'Sınıf III — Büyük makineler (>75 kW), rijit temel',
-  IV:  'Sınıf IV — Büyük makineler (>75 kW), esnek temel'
+  I:   'ISO 10816-1 Sınıf I — Küçük makineler (≤15 kW; 10816-3 kapsamı dışında)',
+  G2R: 'ISO 10816-3 Grup 2 — Orta boy makineler (15–300 kW), rijit temel',
+  G2F: 'ISO 10816-3 Grup 2 — Orta boy makineler (15–300 kW), esnek temel',
+  G1R: 'ISO 10816-3 Grup 1 — Büyük makineler (300 kW–50 MW), rijit temel',
+  G1F: 'ISO 10816-3 Grup 1 — Büyük makineler (300 kW–50 MW), esnek temel',
+  II:  'Sınıf II (eski 10816-1 değerlendirmesi)',
+  III: 'Sınıf III (eski 10816-1 değerlendirmesi)',
+  IV:  'Sınıf IV (eski 10816-1 değerlendirmesi)'
 };
+// Listelerde kısa gösterim
+const ISO_CLASS_SHORT = { I:'Sınıf I (≤15 kW)', G2R:'Grup 2 · rijit', G2F:'Grup 2 · esnek', G1R:'Grup 1 · rijit', G1F:'Grup 1 · esnek', II:'Sınıf II', III:'Sınıf III', IV:'Sınıf IV' };
 
 // ---- Silme onayı ("sil" yazarak) ----
 function confirmDelete(type, id, name){
@@ -4198,7 +4213,7 @@ function renderScreeningNote(){
 // açıklaması. selTag'de kW/temel tipi tanımlı değilse uyarı metni döner.
 function buildIsoAnalysisHtml(ax){
   if(!selTag || !selTag.kw){
-    return '<div style="color:var(--text-dim)">Bu tag için motor gücü (kW) tanımlanmadığından ISO 10816 sınıfı belirlenemiyor. Tag düzenleme ekranından kW ve temel tipini girerek analiz alabilirsiniz.</div>';
+    return '<div style="color:var(--text-dim)">Bu tag için motor gücü (kW) tanımlanmadığından ISO 10816-3 makine grubu belirlenemiyor. Tag düzenleme ekranından kW ve temel tipini girerek analiz alabilirsiniz.</div>';
   }
   const cls = isoClass(selTag.kw, selTag.foundation);
   const rmsVelocity = axisSpectra[ax].rmsVelocity;
@@ -4217,7 +4232,7 @@ function buildIsoAnalysisHtml(ax){
     </div>
     <div style="margin-bottom:12px;">${ISO_ZONE_DESCRIPTIONS[v.zone]}</div>
     <div style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text-dim); border-top:1px solid var(--line); padding-top:8px;">
-      Sınıf ${cls} bölge sınırları (mm/s RMS): A≤${ab} · B≤${bc} · C≤${cd} · D&gt;${cd}
+      ${ISO_CLASS_SHORT[cls]} bölge sınırları (mm/s RMS): A≤${ab} · B≤${bc} · C≤${cd} · D&gt;${cd}
     </div>
     ${(()=>{ const n = isoLowSpeedNote(document.getElementById('rpmInput').value); return n ? `<div style="margin-top:8px; font-size:11.5px; color:var(--amber);">⚠ ${n}</div>` : ''; })()}
     <div style="margin-top:8px; font-size:10.5px; color:var(--text-dim);">${ISO_BASIS_TEXT}</div>`;
@@ -6182,7 +6197,7 @@ function buildPrintReportHtml(chartImages, meta, bearing){
 
     ${buildReportHeaderTableHtml(meta)}
 
-    <h2 style="font-size:15px; margin-bottom:8px;">ISO 10816 Değerlendirmesi</h2>
+    <h2 style="font-size:15px; margin-bottom:8px;">ISO 10816-3 Değerlendirmesi</h2>
     <div style="font-size:12px; color:#555; margin-bottom:8px;">${boundariesTxt}</div>
     <table style="width:100%; border-collapse:collapse; font-size:13px;">
       <tr style="background:#eee;">
@@ -6459,7 +6474,7 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
 
   ${buildReportHeaderTableHtml(meta)}
 
-  <h2 style="font-size:15px; margin-bottom:8px;">ISO 10816 Değerlendirmesi</h2>
+  <h2 style="font-size:15px; margin-bottom:8px;">ISO 10816-3 Değerlendirmesi</h2>
   <div style="font-size:12px; color:#555; margin-bottom:8px;">${boundariesTxt}</div>
   <table style="font-size:13px;">
     <tr style="background:#eee;">

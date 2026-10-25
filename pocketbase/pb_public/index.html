@@ -721,18 +721,6 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
   .panel-title span.tag{ color:var(--phosphor-dim); }
   canvas{ width:100% !important; }
 
-  /* Uyarı rozeti: ana ekranı kaplamadan, tek satır bir bildirim düğmesi.
-     Basılınca ayrı bir ekrana (alertsView) götürür. */
-  #alertBadge{
-    display:none; align-items:center; gap:8px; margin:12px 18px 0;
-    padding:10px 14px; border-radius:10px; cursor:pointer;
-    background:rgba(255,93,93,.12); border:1px solid var(--red); color:var(--red);
-    font-family:'JetBrains Mono',monospace; font-size:12.5px; font-weight:600;
-  }
-  #alertBadge.warn-only{ background:rgba(255,178,56,.12); border-color:var(--amber); color:var(--amber); }
-  #alertBadge .abcount{
-    background:currentColor; color:var(--bg); border-radius:20px; padding:1px 8px; font-size:11px;
-  }
   .alert-row{
     margin:16px 18px 0; background:var(--panel); border:1px solid var(--line); border-radius:12px;
     padding:12px 14px; cursor:pointer;
@@ -857,9 +845,6 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
   <h1>WS300 Analiz — Faz 2</h1>
   <div class="sub">Bağlan → tetikle → ham ivme verisi + G²/Hz PSD</div>
 </header>
-
-<!-- ============== UYARI ROZETİ — basınca alertsView açılır ============== -->
-<div id="alertBadge"><span id="alertBadgeText"></span><span class="abcount" id="alertBadgeCount"></span></div>
 
 <!-- ============== UYARILAR EKRANI ============== -->
 <div id="alertsView" style="display:none">
@@ -2332,23 +2317,8 @@ async function refreshAlertBadge(){
     log('Uyarı taraması başarısız: ' + err.message, 'warn');
     return;
   }
-  const {zoneCount, worseningCount, nearCount, bearingCount, staleCount, worst} = summarizeAlerts(alertScanResults);
-  const total = zoneCount + worseningCount + nearCount + bearingCount + staleCount;
-  const badge = document.getElementById('alertBadge');
-  if(total === 0){
-    badge.style.display = 'none';
-  } else {
-    badge.style.display = 'flex';
-    badge.classList.toggle('warn-only', worst !== 'D'); // Zone D varsa kırmızı, yoksa amber
-    const parts = [];
-    if(zoneCount) parts.push(zoneCount + ' sorunlu nokta');
-    if(worseningCount) parts.push(worseningCount + ' kötüleşen');
-    if(nearCount) parts.push(nearCount + ' sınıra yakın');
-    if(bearingCount) parts.push(bearingCount + ' rulman skoru yüksek');
-    if(staleCount) parts.push(staleCount + ' güncel değil');
-    document.getElementById('alertBadgeText').textContent = '⚠ ' + parts.join(' · ');
-    document.getElementById('alertBadgeCount').textContent = total;
-  }
+  // Üstteki toplam uyarı bandı kaldırıldı (25.10.2026): aynı bilgi ünite ve tag
+  // satırlarında zaten gösteriliyor. Tarama sonucu yalnızca o satırlar için kullanılır.
   // Ana sayfa (ünite listesi) açıksa ünite başı özet satırlarını da güncelle.
   if(document.getElementById('selectView').style.display !== 'none' && !selUnit){
     renderUnitAlertSummaries();
@@ -2436,7 +2406,6 @@ function hideAlertsView(){
     renderSelectView();
   }
 }
-document.getElementById('alertBadge').addEventListener('click', showAlertsView);
 document.getElementById('btnAlertsBack').addEventListener('click', ()=> history.back());
 
 // ---- Trend: seçili nokta için geçmiş ölçümleri yükle/göster ----

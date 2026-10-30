@@ -1221,9 +1221,15 @@ function confirmDelete(type, id, name){
 
 async function deleteCollectionDocs(colRef){
   const snap = await colRef.get();
-  const batch = db.batch();
-  snap.docs.forEach(d=>batch.delete(d.ref));
-  if(!snap.empty) await batch.commit();
+  // Ölçümlerin ham veri alt dokümanı (raw/data) ana dokümanla birlikte silinmez —
+  // ayrıca silinir. Firestore toplu yazma sınırı (500) için parçalı gönderim.
+  let batch = db.batch(), ops = 0;
+  for(const d of snap.docs){
+    batch.delete(d.ref); ops++;
+    if(d.data().hasRaw){ batch.delete(d.ref.collection('raw').doc('data')); ops++; }
+    if(ops >= 400){ await batch.commit(); batch = db.batch(); ops = 0; }
+  }
+  if(ops) await batch.commit();
 }
 
 // Bir ölçüm silindikten (ya da en son ölçüm bu olduğu için hiç kalmadığından)
@@ -1283,6 +1289,7 @@ async function doPendingDelete(){
     // özetini silme sonrasında doğru noktaya göre yeniden hesaplayabilmek için.
     const measSnap = await measCol(selUnit.id, selTag.id).doc(id).get();
     const point = measSnap.exists ? measSnap.data().point : null;
+    await measCol(selUnit.id, selTag.id).doc(id).collection('raw').doc('data').delete().catch(()=>{});
     await measCol(selUnit.id, selTag.id).doc(id).delete();
     pendingDelete = null;
     historySelectedIds = historySelectedIds.filter(sid=>sid!==id);
@@ -1510,6 +1517,55 @@ function downsampleSpectrum(freqs, values, targetPoints, fLow, fHigh, mode){
   return {f, v};
 }
 
+// ---- Ham veri (WS3R biçimi, little-endian) ----
+//   0 'WS3R'  4 uint16 sürüm(=1)  6 uint16 eksen(=3)  8 uint32 örnekleme Hz  12 float32 ölçek (g/bit)
+//   16 uint32 nZ  20 uint32 nX  24 uint32 nY  28… int16 örnekler: Z, X, Y (sensörün kendi sırası)
+// PocketBase sürümünün .bin dosyasıyla birebir aynı biçim. Firestore'da ölçüm
+// dokümanını şişirmemek (trend/geçmiş listeleri her dokümanı okur) için ayrı bir
+// alt dokümanda (measurements/{id}/raw/data) base64 olarak saklanır; yalnızca
+// rapor/yeniden analiz sırasında okunur.
+function buildRawBuffer(){
+  const order = ['Z','X','Y'];
+  const arrs = order.map(a=> axisSamples[a] || new Float32Array(0));
+  if(!arrs.some(a=>a.length)) return null;
+  const total = arrs.reduce((n,a)=>n+a.length, 0);
+  const buf = new ArrayBuffer(28 + total*2);
+  const dv = new DataView(buf);
+  [0x57,0x53,0x33,0x52].forEach((b,i)=>dv.setUint8(i,b));
+  dv.setUint16(4, 1, true);
+  dv.setUint16(6, 3, true);
+  dv.setUint32(8, Math.round(SAMPLE_RATE_HZ), true);
+  dv.setFloat32(12, SCALE_G_PER_LSB, true);
+  arrs.forEach((a,i)=> dv.setUint32(16 + i*4, a.length, true));
+  let off = 28;
+  for(const a of arrs){
+    for(let i=0;i<a.length;i++){
+      let v = Math.round(a[i] / SCALE_G_PER_LSB);
+      if(v > 32767) v = 32767; else if(v < -32768) v = -32768;
+      dv.setInt16(off, v, true); off += 2;
+    }
+  }
+  return buf;
+}
+function bufferToBase64(buf){
+  const b = new Uint8Array(buf);
+  let s = '';
+  for(let i=0;i<b.length;i+=0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i+0x8000));
+  return btoa(s);
+}
+function base64ToBuffer(b64){
+  const s = atob(b64);
+  const b = new Uint8Array(s.length);
+  for(let i=0;i<s.length;i++) b[i] = s.charCodeAt(i);
+  return b.buffer;
+}
+async function loadRawForDoc(doc){
+  if(!doc || !doc.hasRaw || !doc._id || !selUnit || !selTag) return null;
+  const snap = await measCol(selUnit.id, selTag.id).doc(doc._id).collection('raw').doc('data').get();
+  if(!snap.exists || !snap.data().b64) return null;
+  return decodeRawBuffer(base64ToBuffer(snap.data().b64));
+}
+
 async function saveMeasurementToFirestore(qualityIssues){
   if(!selUnit || !selTag || !selPoint) return;
   const rpmVal = parseFloat(document.getElementById('rpmInput').value) || null;
@@ -1540,9 +1596,9 @@ async function saveMeasurementToFirestore(qualityIssues){
     // edilebilir düzeyde; geçmiş ölçümlerde de zarf grafiği/analizi görülebilsin diye.
     const samples = axisSamples[ax];
     if(samples && samples.length){
-      const {freqs: efreqs, amp: eamp} = envelopeSpectrum(samples, SAMPLE_RATE_HZ, ENV_DEFAULT_F_LOW, ENV_DEFAULT_F_HIGH);
+      const {freqs: efreqs, amp: eamp} = envelopeSpectrum(samples, SAMPLE_RATE_HZ, ENV_DEFAULT_F_LOW, ENV_DEFAULT_F_HIGH, liveEnvOpts(ax));
       const envDown = downsampleSpectrum(efreqs, eamp, 200, 0, ENV_SPEC_F_MAX, 'max');
-      doc.envelope[ax] = { f: envDown.f, v: envDown.v, band: { low: ENV_DEFAULT_F_LOW, high: ENV_DEFAULT_F_HIGH } };
+      doc.envelope[ax] = { f: envDown.f, v: envDown.v, band: { low: ENV_DEFAULT_F_LOW, high: ENV_DEFAULT_F_HIGH }, driveSuppressed: !!liveEnvOpts(ax) };
     }
   }
   const shaftEst = liveShaftHz(rpmVal);
@@ -1559,7 +1615,15 @@ async function saveMeasurementToFirestore(qualityIssues){
     // kalırdı. Yazma yerel önbelleğe anında uygulanır (ekranlar hemen günceller),
     // sunucuya gönderim arka planda, internet geldiğinde olur.
     const pointLabel = selPoint==='on'?'Ön':'Arka';
-    const measWrite = measCol(selUnit.id, selTag.id).doc().set(doc);
+    const rawBuf = buildRawBuffer();
+    if(rawBuf) doc.hasRaw = true;
+    const measRef = measCol(selUnit.id, selTag.id).doc();
+    const measWrite = measRef.set(doc);
+    if(rawBuf){
+      // Ham veri ayrı alt dokümanda; yazılamazsa ölçümün kendisi etkilenmez.
+      measRef.collection('raw').doc('data').set({ format: 'WS3R', b64: bufferToBase64(rawBuf) })
+        .catch(e=> log('Ham veri kaydedilemedi: ' + (e.message || e), 'warn'));
+    }
     // Uyarılar ekranı her tag için 100'lerce ölçüm dokümanını (spektrum
     // verisiyle birlikte) taramak zorunda kalmasın diye, tag dokümanının
     // üzerine bu noktanın son ölçüm özetini (rulman verisi olmadan, küçük)
@@ -2015,7 +2079,7 @@ async function loadTrend(){
     // En güncel kayıt — canlı ölçüm henüz alınmamışsa PDF Rapor'un bu
     // geçmiş ölçümden üretilebilmesi için saklanıyor.
     trendDocsData = docs.map(d=>d.data());
-    lastHistoricalDoc = docs[docs.length - 1].data();
+    lastHistoricalDoc = Object.assign({ _id: docs[docs.length - 1].id }, docs[docs.length - 1].data());
     refreshPdfButtonState();
     if(docs.length > 30) docs = docs.slice(docs.length - 30);
     trendShownDocs = docs.map(d=>d.data());
@@ -3670,8 +3734,10 @@ function ifft(re, im){
 // ============================================================
 // ZARF (ENVELOPE) SPEKTRUMU — erken evre rulman arızası tespiti
 // Ham ivme sinyalinin yüksek frekanslı bir bandını (rulman rezonans/darbe
-// bölgesi, varsayılan 1300-2800 Hz — sürücülü motorlarda PWM taşıyıcı
-// kümesinin üstünde kalacak şekilde seçildi) demodüle eder. BPFO/BPFI gibi
+// bölgesi, varsayılan 1300-2800 Hz) demodüle eder. Sürücülü motorlarda PWM
+// taşıyıcı kümesi bu bandın içine düşebildiği için, eksenin PSD'sinden sürücü
+// izi (fe) bulunduysa taşıyıcı çizgileri demodülasyondan önce silinir
+// (suppressDriveLines). BPFO/BPFI gibi
 // periyodik darbeler ham PSD'de rezonansın içine gömülü kalıp görünmezken,
 // zarf spektrumunda düşük frekans bölgesinde (0-500 Hz) net pikler olarak
 // ortaya çıkar.
@@ -3684,7 +3750,93 @@ function ifft(re, im){
 // domenindeki karmaşık analitik sinyale dönülür; bu sinyalin genliği
 // (|re + i·im|) doğrudan ZARF sinyalidir. DC bileşeni çıkarılıp tekrar
 // FFT alınarak zarf spektrumu elde edilir.
-function envelopeSpectrum(samples, fs, fLow, fHigh){
+// VFD (PWM SÜRÜCÜ) TAŞIYICI ÇİZGİLERİNİN ZARFTAN AYIKLANMASI
+// Sürücülü motorlarda PWM taşıyıcısı ~1.5–3 kHz'de, aralarında 2×fe (fe: motorun
+// elektrik frekansı) olan çok güçlü ve dar bir çizgi kümesi bırakır. Bu küme
+// demodülasyon bandının içine düşerse zarf spektrumu rulmanı değil sürücüyü
+// gösterir (2fe, 4fe, 6fe… tepeleri). Demodülasyondan önce SADECE bu ızgaraya
+// (aralarındaki fark 2fe'nin katı olan) oturan dar/güçlü çizgiler silinir.
+// Rulman darbesinin oluşturduğu tarak (arıza frekansı aralıklı) ızgaraya
+// oturmadığı için korunur; 2fe bir rulman frekansına denk geliyorsa bastırma
+// hiç açılmaz (envOptsFor).
+const ENV_LINE_GATE = 30;          // güç, yerel medyanın en az bu katı → "çizgi"
+const ENV_LINE_FLOOR_HZ = 40;      // yerel medyan penceresi (±Hz)
+const ENV_LINE_MAX_HALF_HZ = 3;    // bir çizgi için silinen en geniş yarı genişlik
+function suppressDriveLines(re, im, lo, hi, binHz, spacingHz){
+  const n = hi - lo + 1;
+  if(n < 16 || !(spacingHz > 0)) return [];
+  const p = new Float64Array(n);
+  for(let k=0;k<n;k++){ const a = re[lo+k], b = im[lo+k]; p[k] = a*a + b*b; }
+  const win = Math.max(8, Math.round(ENV_LINE_FLOOR_HZ/binHz));
+  const blk = Math.max(4, Math.round(win/4));
+  const floor = new Float64Array(n);
+  for(let s=0;s<n;s+=blk){
+    const arr = Array.from(p.subarray(Math.max(0, s-win), Math.min(n, s+blk+win))).sort((x,y)=>x-y);
+    const med = arr[arr.length>>1] || 1e-30;
+    for(let k=s;k<Math.min(n, s+blk);k++) floor[k] = med;
+  }
+  const maxHalf = Math.max(2, Math.round(ENV_LINE_MAX_HALF_HZ/binHz));
+  const peaks = [];
+  let k = 0;
+  while(k < n){
+    if(p[k] < ENV_LINE_GATE*floor[k]){ k++; continue; }
+    const s = k;
+    while(k < n && p[k] >= ENV_LINE_GATE*floor[k]) k++;
+    if(k - s > 2*maxHalf) continue; // geniş tümsek (rezonans) — dar çizgi değil
+    let pk = s;
+    for(let j=s;j<k;j++) if(p[j] > p[pk]) pk = j;
+    let a = pk, b = pk;
+    while(a > 0 && pk - a < maxHalf && p[a-1] > 3*floor[a-1]) a--;
+    while(b < n-1 && b - pk < maxHalf && p[b+1] > 3*floor[b+1]) b++;
+    peaks.push({ f:(lo+pk)*binHz, a, b });
+    k = Math.max(k, b+1);
+  }
+  const onGrid = (d)=>{
+    for(let m=1;m<=6;m++){ if(Math.abs(d - m*spacingHz) <= Math.max(1.5, 0.01*m*spacingHz)) return true; }
+    return false;
+  };
+  const removed = [];
+  peaks.forEach((P, i)=>{
+    if(!peaks.some((Q, j)=> j !== i && onGrid(Math.abs(P.f - Q.f)))) return;
+    for(let j=P.a;j<=P.b;j++){ re[lo+j] = 0; im[lo+j] = 0; }
+    removed.push(P.f);
+  });
+  return removed;
+}
+
+// Zarf için bastırma ayarı. 2×fe, bir rulman arıza frekansına (veya 2 katına)
+// %2'den yakınsa sürücü çizgisi ile arıza tarağı ayırt edilemeyeceği için bastırma
+// kapalı kalır. bFreqs girilen (nominal) devre göredir; scale = ölçülen/nominal devir.
+// Rulman frekansları bilinmiyorsa (rulman kodu/devir girilmemiş) bastırma yapılmaz:
+// sürücü dizisi ile rulman darbe tarağını ayırt edecek bilgi yoktur.
+function envOptsFor(driveFe, bFreqs, scale){
+  if(!driveFe || !bFreqs) return null;
+  const sp = 2*driveFe, k = scale || 1;
+  if(bFreqs){
+    for(const key of ['BPFO','BPFI','BSF']){
+      const F = bFreqs[key]*k;
+      if(!F) continue;
+      for(const m of [1,2]){ if(Math.abs(sp - m*F) <= 0.02*m*F) return null; }
+    }
+  }
+  return { driveFe };
+}
+// Ölçülen devir nominalin %6'sı içindeyse oran, değilse 1 (analyzeBearing ile aynı kural).
+function shaftScale(rpm, shaftHz){
+  if(!rpm || !shaftHz) return 1;
+  const r = shaftHz/(rpm/60);
+  return Math.abs(r - 1) <= 0.06 ? r : 1;
+}
+// Rulman arıza frekansları, ölçülen devre ölçeklenmiş (yoksa nominal).
+function scaledBearingFreqs(code, rpm, shaftHz){
+  const b = computeBearingFrequencies(code, rpm);
+  if(!b) return null;
+  const k = shaftScale(rpm, shaftHz), o = {};
+  Object.keys(b).forEach(x=>{ o[x] = b[x]*k; });
+  return o;
+}
+
+function envelopeSpectrum(samples, fs, fLow, fHigh, opts){
   const N0 = samples.length;
   const N = nextPow2(N0);
   const re = new Float64Array(N);
@@ -3698,6 +3850,7 @@ function envelopeSpectrum(samples, fs, fLow, fHigh){
   const binHz = fs/N;
   const loBin = Math.max(1, Math.round(fLow/binHz));
   const hiBin = Math.min(N/2 - 1, Math.round(fHigh/binHz));
+  const removedLines = (opts && opts.driveFe) ? suppressDriveLines(re, im, loBin, hiBin, binHz, 2*opts.driveFe) : [];
   const fre = new Float64Array(N);
   const fim = new Float64Array(N);
   for(let k=loBin; k<=hiBin; k++){
@@ -3731,7 +3884,7 @@ function envelopeSpectrum(samples, fs, fLow, fHigh){
     amp[k] = Math.sqrt(ere[k]*ere[k]+eim[k]*eim[k]) * normFactor;
     freqs[k] = k*fs/N;
   }
-  return {freqs, amp};
+  return {freqs, amp, removedLines};
 }
 
 function computePSD(samples, fs){
@@ -4019,7 +4172,7 @@ function liveAutoDiag(){
   ['X','Y','Z'].forEach(ax=>{
     const sp = axisSpectra[ax];
     if(!sp) return;
-    const mains = estimateMainsBase(normalizePsdForAnalysis(sp.freqs, sp.psd));
+    const mains = estimateMainsBase(normalizePsdForAnalysis(sp.freqs, sp.psd), shaftHz, scaledBearingFreqs(code, rpm, shaftHz));
     axes[ax] = shaftFaultBreakdown(sp.freqs, sp.velAmp, shaftHz, mains, sp.rmsVelocity);
     const env = liveEnvDown(ax);
     bfi[ax] = env ? bfiFor(env.f, env.v, code, rpm, est, mains) : null;
@@ -4027,12 +4180,23 @@ function liveAutoDiag(){
   return { rpm, shaftHz, estimated: !!est, axes, bfi, code };
 }
 
+// Canlı ölçümde eksenin zarf ayarı (sürücü izi + noktanın rulman frekansları).
+function liveEnvOpts(ax){
+  const sp = axisSpectra[ax];
+  if(!sp) return null;
+  const rpmEl = document.getElementById('rpmInput');
+  const rpm = rpmEl ? (parseFloat(rpmEl.value) || null) : null;
+  const shaft = rpm ? (liveShaftHz(rpm) || rpm/60) : null;
+  const bF = scaledBearingFreqs(bearingCodeForPoint(), rpm, shaft);
+  return envOptsFor(estimateDriveFe(normalizePsdForAnalysis(sp.freqs, sp.psd), shaft, bF), bF);
+}
+
 // Kayıtla aynı biçimde (200 nokta, 0–ENV_SPEC_F_MAX) zarf spektrumu; eksen başına önbellekli.
 function liveEnvDown(ax){
   const sp = axisSpectra[ax], s = axisSamples[ax];
   if(!sp || !s || !s.length) return null;
   if(!sp.envDown){
-    const {freqs, amp} = envelopeSpectrum(s, SAMPLE_RATE_HZ, ENV_DEFAULT_F_LOW, ENV_DEFAULT_F_HIGH);
+    const {freqs, amp} = envelopeSpectrum(s, SAMPLE_RATE_HZ, ENV_DEFAULT_F_LOW, ENV_DEFAULT_F_HIGH, liveEnvOpts(ax));
     sp.envDown = downsampleSpectrum(freqs, amp, 200, 0, ENV_SPEC_F_MAX, 'max');
   }
   return sp.envDown;
@@ -4049,17 +4213,67 @@ function bfiFor(envF, envV, code, rpm, shaftHz, mainsHz){
 }
 
 // Kayıtlı bir ölçüm dokümanı için eksen başına BFI (kayıtta yoksa zarf verisinden hesaplanır).
+// Kayıtlı ölçümün zarfı: ham veriden yeniden hesaplanmışsa (_env) o, yoksa kayıtlı olan.
+function docEnvelope(m, ax){
+  if(!m) return null;
+  if(m._env && m._env[ax]) return m._env[ax];
+  return m.envelope ? m.envelope[ax] : null;
+}
+
+// Ham sinyal dosyası (WS3R biçimi) — bkz. ham veri kaydı. Çözülmüş örnekler g cinsinden.
+function decodeRawBuffer(buf){
+  const dv = new DataView(buf);
+  if(buf.byteLength < 28 || dv.getUint8(0)!==0x57 || dv.getUint8(1)!==0x53 || dv.getUint8(2)!==0x33 || dv.getUint8(3)!==0x52) return null;
+  const fs = dv.getUint32(8, true), scale = dv.getFloat32(12, true);
+  const order = ['Z','X','Y'], axes = {};
+  let off = 28;
+  for(let i=0;i<3;i++){
+    const n = dv.getUint32(16 + i*4, true);
+    if(off + n*2 > buf.byteLength) return null;
+    const a = new Float32Array(n);
+    for(let j=0;j<n;j++){ a[j] = dv.getInt16(off, true)*scale; off += 2; }
+    axes[order[i]] = a;
+  }
+  return { fs, axes };
+}
+
+// Kayıtlı ölçümün ham verisi varsa zarfı GÜNCEL yöntemle yeniden hesaplar (doc._env).
+// Böylece analizdeki iyileştirmeler ham verisi olan eski ölçümlere de uygulanır.
+async function ensureHistoricalEnvelope(doc){
+  if(!doc || doc._env !== undefined) return;
+  doc._env = null;
+  let raw = null;
+  try{ raw = await loadRawForDoc(doc); }
+  catch(e){ log('Ham veri okunamadı, kayıtlı zarf kullanılıyor: ' + (e.message || e), 'warn'); }
+  if(!raw) return;
+  const shaft = doc.shaftHz || (doc.rpm ? doc.rpm/60 : null);
+  const bF = scaledBearingFreqs(bearingCodeForPoint(), doc.rpm || null, shaft);
+  const out = {};
+  ['X','Y','Z'].forEach(ax=>{
+    const s = raw.axes[ax];
+    if(!s || !s.length) return;
+    const {freqs, psd} = computePSD(s, raw.fs);
+    const opts = envOptsFor(estimateDriveFe(normalizePsdForAnalysis(freqs, psd), shaft, bF), bF);
+    const {freqs: ef, amp} = envelopeSpectrum(s, raw.fs, ENV_DEFAULT_F_LOW, ENV_DEFAULT_F_HIGH, opts);
+    const d = downsampleSpectrum(ef, amp, 200, 0, ENV_SPEC_F_MAX, 'max');
+    out[ax] = { f: d.f, v: d.v, band: { low: ENV_DEFAULT_F_LOW, high: ENV_DEFAULT_F_HIGH }, driveSuppressed: !!opts };
+  });
+  if(Object.keys(out).length) doc._env = out;
+}
+
 function bfiForDoc(m, code){
   const out = {};
   // sampleRate alanı olmayan eski kayıtlar 12800 Hz varsayımıyla kaydedildi: zarf
   // frekansları 2 kat hatalı olduğundan bunlar için skor hesaplanmaz.
   if(!m.sampleRate && !m.bfi){ out.X = out.Y = out.Z = null; return out; }
   ['X','Y','Z'].forEach(ax=>{
-    if(m.bfi && m.bfi[ax]){ out[ax] = m.bfi[ax]; return; }
-    const ed = m.envelope && m.envelope[ax];
+    // Ham veriden yeniden hesaplanmış zarf varsa kayıtlı (eski yöntem) skor yerine o kullanılır.
+    if(!m._env && m.bfi && m.bfi[ax]){ out[ax] = m.bfi[ax]; return; }
+    const ed = docEnvelope(m, ax);
     if(!ed || !ed.f) { out[ax] = null; return; }
     const pd = m.accelPSD && m.accelPSD[ax];
-    const mains = pd && pd.f ? estimateMainsBase(normalizePsdForAnalysis(pd.f, pd.v)) : MAINS_HZ;
+    const mShaft = m.shaftHz || (m.rpm ? m.rpm/60 : null);
+    const mains = pd && pd.f ? estimateMainsBase(normalizePsdForAnalysis(pd.f, pd.v), mShaft, scaledBearingFreqs(code, m.rpm, mShaft)) : MAINS_HZ;
     const r = bfiFor(ed.f, ed.v, code, m.rpm, m.shaftHz, mains);
     out[ax] = r ? r.scores : null;
   });
@@ -4740,7 +4954,7 @@ function showDetail(ax){
     if(!samples){ return; }
     const fLow = parseFloat(document.getElementById('envFLow').value) || ENV_DEFAULT_F_LOW;
     const fHigh = parseFloat(document.getElementById('envFHigh').value) || ENV_DEFAULT_F_HIGH;
-    const {freqs: efreqs, amp: eamp} = envelopeSpectrum(samples, SAMPLE_RATE_HZ, fLow, fHigh);
+    const {freqs: efreqs, amp: eamp} = envelopeSpectrum(samples, SAMPLE_RATE_HZ, fLow, fHigh, liveEnvOpts(ax));
     const envPts = [];
     for(let k=0;k<efreqs.length && efreqs[k]<=ENV_F_MAX;k++){ if(efreqs[k] >= ENV_MIN_HZ) envPts.push({x:efreqs[k], y:eamp[k]}); }
 
@@ -5176,8 +5390,67 @@ function estimateShaftHzFromSpectra(list, nominalHz){
 // kaymış çıkıyorsa (örn. 99.2, 198.4, 297.7, 496.1 → 49.6 Hz tabanlı), şebeke harmonik
 // tabanı o değer alınır (şebeke sapması veya örnekleme saati farkı). Net bir
 // desen yoksa 50 Hz kullanılır.
-function estimateMainsBase(norm){
+// Sürücülü (VFD) motor izi: PSD'de ~1.2 kHz üstünde, aralarında 2×fe olan güçlü
+// çizgi kümesi (PWM taşıyıcısı ve yan bantları). Kümenin çizgi aralığından motorun
+// elektrik frekansı fe bulunur (fe = aralık/2). Aynı bölgede başka düzenli diziler
+// de olabileceği için (ör. rezonansı uyaran rulman darbe tarağı) tüm çizgi çiftleri
+// taranır, her aday aralık için kaç çizginin bu ızgaraya oturduğu sayılır; en az 3
+// çizgi gerekir. Devir verilmişse devirle tutarsız adaylar elenir (validDriveFe).
+const DRIVE_CLUSTER_F_MIN = 1200;
+const DRIVE_PEAK_GATE = 16;
+function estimateDriveFe(norm, shaftHz, bFreqs){
+  if(!norm) return null;
+  const pk = findStrongPeaks(norm, DRIVE_PEAK_GATE, 16, DRIVE_CLUSTER_F_MIN).map(p=>p.freq).sort((a,b)=>a-b);
+  if(pk.length < 3) return null;
+  const tolOf = (x)=> Math.max(1.5, 0.01*x);
+  const raw = [];
+  for(let i=0;i<pk.length;i++) for(let j=i+1;j<pk.length;j++){ const d = pk[j]-pk[i]; if(d >= 60 && d <= 150) raw.push(d); }
+  const cands = [];
+  raw.forEach(s0=>{
+    const near = raw.filter(d=>Math.abs(d - s0) <= tolOf(s0));
+    const s = near.reduce((a,b)=>a+b, 0)/near.length;
+    if(cands.some(c=>Math.abs(c.s - s) <= tolOf(s))) return;
+    // Bu aralığın ızgarasına (k×s, k=1..4) oturan çizgiler
+    const on = new Set();
+    for(let i=0;i<pk.length;i++) for(let j=i+1;j<pk.length;j++){
+      const d = pk[j]-pk[i], k = Math.round(d/s);
+      if(k >= 1 && k <= 4 && Math.abs(d - k*s) <= tolOf(k*s)){ on.add(i); on.add(j); }
+    }
+    if(on.size >= 3) cands.push({ s, n: on.size });
+  });
+  cands.sort((a,b)=> b.n - a.n);
+  for(const c of cands){ const fe = validDriveFe(c.s/2, shaftHz); if(fe && !nearBearingFreq(fe, bFreqs)) return fe; }
+  return null;
+}
+// fe veya 2fe bir rulman arıza frekansına (ya da 2 katına) %2'den yakınsa bu dizi
+// sürücüden değil rulmandan geliyor olabilir — sürücü izi sayılmaz. 63xx serisinde
+// BPFO ≈ 3.1× devir, 6 kutuplu motorun fe'si ≈ 3× devir olduğu için bu ayrım şart.
+function nearBearingFreq(fe, bFreqs){
+  if(!fe || !bFreqs) return false;
+  for(const key of ['BPFO','BPFI','BSF']){
+    const F = bFreqs[key];
+    if(!F) continue;
+    for(const t of [fe, 2*fe]) for(const m of [1,2]){ if(Math.abs(t - m*F) <= 0.02*m*F) return true; }
+  }
+  return false;
+}
+const isDriveBase = (hz)=> !!hz && Math.abs(hz - MAINS_HZ) > 0.6;
+// fe mil devriyle tutarlı olmalı: asenkron motorda fe ≈ (kutup çifti) × devir × (1 + kayma),
+// kayma 0–%8. Tutmuyorsa (ör. çizgi kümesi aslında bir rulman darbe tarağıysa) fe reddedilir.
+function validDriveFe(fe, shaftHz){
+  if(!fe) return null;
+  if(!shaftHz) return fe;
+  const r = fe/shaftHz, n = Math.round(r);
+  if(n < 1 || n > 4) return null;
+  const q = r/n;
+  return (q >= 0.995 && q <= 1.08) ? fe : null;
+}
+
+function estimateMainsBase(norm, shaftHz, bFreqs){
   if(!norm) return MAINS_HZ;
+  // Sürücü izi varsa motorun gördüğü "şebeke" sürücünün çıkış frekansıdır.
+  const fe = estimateDriveFe(norm, shaftHz, bFreqs);
+  if(fe) return fe;
   const peaks = findStrongPeaks(norm, PSD_PEAK_GATE, 10, 90);
   const bases = [];
   peaks.forEach(p=>{
@@ -5401,7 +5674,7 @@ function exclusionReason(freq, shaftHz, mainsHz){
   const base = mainsHz || MAINS_HZ;
   for(let n=1; n*base <= 700; n++){
     const m = n*base;
-    if(Math.abs(freq - m) <= Math.max(1.5, 0.006*m)) return (n===1 ? '' : n+'×') + base.toFixed(base===MAINS_HZ?0:1) + ' Hz şebeke frekansı';
+    if(Math.abs(freq - m) <= Math.max(1.5, 0.006*m)) return (n===1 ? '' : n+'×') + base.toFixed(base===MAINS_HZ?0:1) + (isDriveBase(base) ? ' Hz sürücü elektrik frekansı (fe)' : ' Hz şebeke frekansı');
   }
   if(shaftHz){
     for(let n=1; n<=8; n++){
@@ -5473,6 +5746,26 @@ function findStrongPeaks(norm, gate, count, fMin){
   return out.slice(0, count);
 }
 
+// Bulunan bir rulman çizgisi bir mil harmoniğine (n×devir) çok yakınsa (≤%5) uyarı.
+// Ör. 63xx serisinde BPFO ≈ 3.04–3.10×, BPFI ≈ 4.9× → 3× ve 5× devirle neredeyse çakışır;
+// devir tahminindeki küçük bir hata mekanik harmoniği rulman arızası gibi gösterebilir.
+const ORDER_OVERLAP_PCT = 0.05;
+function orderOverlapNotes(perKey, shaftHz, nominalHz, bFreqs){
+  const out = [];
+  if(!shaftHz || !nominalHz || !bFreqs) return out;
+  perKey.forEach(k=>{
+    const c = (k.psd || []).concat(k.env || []).sort((a,b)=>a.h-b.h)[0];
+    if(!c || k.level < 2) return;
+    const n = Math.round(c.target/shaftHz);
+    if(n < 1 || n > 10) return;
+    const gap = Math.abs(c.target - n*shaftHz);
+    if(gap > ORDER_OVERLAP_PCT*c.target) return;
+    const ratio = (bFreqs[k.key]/nominalHz)*c.h;
+    out.push(`⚠ ${lineLabel(c)} (teorik ${c.target.toFixed(1)} Hz) ${n}× devire (${(n*shaftHz).toFixed(1)} Hz) çok yakın — fark yalnızca ${gap.toFixed(1)} Hz (%${(gap/c.target*100).toFixed(1)}). Devir tahmini bu kadar şaşarsa bu tepe mekanik ${n}× harmonik olabilir. Kesin ayrım için motoru farklı bir devirde (sürücü Hz'ini değiştirerek) tekrar ölçün: tepe devrin tam ${n} katında kalıyorsa mekanik, ${ratio.toFixed(2)}× oranını koruyorsa rulman.`);
+  });
+  return out;
+}
+
 // ctx: { rpm, shaftHz (ölçülen mil frekansı, opsiyonel), zone ('A'-'D'), worsening (bool) }
 function analyzeBearing(psdF, psdV, envPts, bFreqs, ctx){
   if(!bFreqs) return null;
@@ -5487,7 +5780,9 @@ function analyzeBearing(psdF, psdV, envPts, bFreqs, ctx){
   const keys = Object.keys(bFreqs);
   const psdNorm = psdF && psdF.length ? normalizePsdForAnalysis(psdF, psdV) : null;
   const envNorm = normalizeEnvForAnalysis(envPts);
-  const mainsHz = estimateMainsBase(psdNorm);
+  const bScaled = {};
+  keys.forEach(k=>{ bScaled[k] = bFreqs[k]*scale; });
+  const mainsHz = estimateMainsBase(psdNorm, shaftHz, bScaled);
 
   function run(norm, maxH, fMax, gate, fMinPeak){
     if(!norm) return null;
@@ -5566,9 +5861,12 @@ function analyzeBearing(psdF, psdV, envPts, bFreqs, ctx){
   if(top && top.strongBlocked){
     notes.push('Aynı yöntemde birden fazla harmonik görüldü, ancak devir ölçümden doğrulanamadığı için Seviye 3 verilmedi; ikinci yöntemin (PSD/Zarf) teyidi veya devrin doğrulandığı yeni bir ölçüm gerekir.');
   }
-  if(mainsHz !== MAINS_HZ && Math.abs(mainsHz - MAINS_HZ) > 0.15){
+  if(isDriveBase(mainsHz)){
+    notes.push(`Sürücü (VFD) izi: PSD'deki taşıyıcı çizgileri ${(2*mainsHz).toFixed(1)} Hz aralıklı → motorun elektrik frekansı fe ≈ ${mainsHz.toFixed(1)} Hz. fe'nin katlarındaki tepeler (ör. 2fe = ${(2*mainsHz).toFixed(1)} Hz) elektriksel kabul edildi, rulman bulgusu sayılmadı.`);
+  } else if(mainsHz !== MAINS_HZ && Math.abs(mainsHz - MAINS_HZ) > 0.15){
     notes.push(`Spektrumdaki şebeke harmonikleri ${mainsHz.toFixed(1)} Hz tabanlı görünüyor (50 Hz'e göre %${((1-mainsHz/MAINS_HZ)*100).toFixed(1)} kayma) — şebeke sapması veya sensör örnekleme saati farkı olabilir; şebeke tepeleri bu değere göre dışlandı.`);
   }
+  orderOverlapNotes(perKey, shaftHz, nominalHz, bFreqs).forEach(t=> notes.unshift(t));
   if(level >= 2 && level < 4 && top.psd.length && top.env.length && !(zoneHigh || ctx.worsening)){
     notes.push('Seviye 4 için ayrıca ISO bölgesi C/D veya önceki ölçüme göre kötüleşme gerekir; şu an ikisi de yok.');
   }
@@ -5967,15 +6265,15 @@ function historicalReportSpec(doc, ax){
 function liveEnvelopeSpec(ax){
   const samples = axisSamples[ax];
   if(!samples || !samples.length) return null;
-  const {freqs: efreqs, amp: eamp} = envelopeSpectrum(samples, SAMPLE_RATE_HZ, ENV_DEFAULT_F_LOW, ENV_DEFAULT_F_HIGH);
+  const {freqs: efreqs, amp: eamp} = envelopeSpectrum(samples, SAMPLE_RATE_HZ, ENV_DEFAULT_F_LOW, ENV_DEFAULT_F_HIGH, liveEnvOpts(ax));
   const envPts = [];
   for(let k=0;k<efreqs.length && efreqs[k]<=ENV_SPEC_F_MAX;k++){ if(efreqs[k] >= ENV_MIN_HZ) envPts.push({x:efreqs[k], y:eamp[k]}); }
   if(!envPts.length) return null;
   return { envPts, fLow: ENV_DEFAULT_F_LOW, fHigh: ENV_DEFAULT_F_HIGH };
 }
 function historicalEnvelopeSpec(doc, ax){
-  if(!doc || !doc.envelope || !doc.envelope[ax] || !doc.envelope[ax].f || !doc.envelope[ax].f.length) return null;
-  const e = doc.envelope[ax];
+  const e = docEnvelope(doc, ax);
+  if(!e || !e.f || !e.f.length) return null;
   const envPts = e.f.map((f,i)=>({x:f, y:e.v[i]})).filter(p=>p.x >= ENV_MIN_HZ);
   if(!envPts.length) return null;
   const band = e.band || { low: ENV_DEFAULT_F_LOW, high: ENV_DEFAULT_F_HIGH };
@@ -6224,6 +6522,7 @@ function gatherReportContext(){
       shaftHz: doc.shaftHz || null,
       rms: doc.velRMS || {},
       sourceNote: `⚠ Bu rapor bu oturumda alınmış canlı bir ölçüme değil, kayıtlı en güncel ölçüme aittir (${dateTxt}). Güncel bir rapor için önce yeni bir ölçüm alın.`
+        + (doc._env ? ' Zarf spektrumu bu ölçümün kayıtlı ham verisinden güncel yöntemle yeniden hesaplandı.' : '')
     };
   } else {
     return null;
@@ -6257,6 +6556,7 @@ function reportCtxFor(meta, bearing){
 }
 
 async function printReport(){
+  if(!(axisSpectra.X || axisSpectra.Y || axisSpectra.Z) && lastHistoricalDoc) await ensureHistoricalEnvelope(lastHistoricalDoc);
   const ctx = gatherReportContext();
   if(!ctx){
     log('Rapor için önce bir ölçüm alınmalı ya da bu nokta için kayıtlı geçmiş ölçüm olmalı.', 'warn');
@@ -6302,6 +6602,7 @@ function getInlineScriptSource(marker){
 }
 
 async function exportHtmlReport(){
+  if(!(axisSpectra.X || axisSpectra.Y || axisSpectra.Z) && lastHistoricalDoc) await ensureHistoricalEnvelope(lastHistoricalDoc);
   const ctx = gatherReportContext();
   if(!ctx){
     log('HTML rapor için önce bir ölçüm alınmalı ya da bu nokta için kayıtlı geçmiş ölçüm olmalı.', 'warn');

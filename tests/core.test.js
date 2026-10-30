@@ -23,13 +23,13 @@ for(const file of APP_FILES){
   const api = load(file, {
     // assessSignalQuality global axisSamples'ı okur; testten doldurabilmek için erişimci.
     prelude: 'var SAMPLE_RATE_HZ = 6510; var SCALE_G_PER_LSB = 0.0006104; var axisSamples = {}; function getAxisSamples(){ return axisSamples; }',
-    exports: ['getAxisSamples', 'shaftFaultBreakdown', 'estimateMainsBase', 'bearingFaultIndex', 'axisRoleOf', 'axialMisalignmentCheck', 'bfiSummaryOf', 'evaluateBfiTrend'],
+    exports: ['getAxisSamples', 'shaftFaultBreakdown', 'estimateMainsBase', 'estimateDriveFe', 'validDriveFe', 'normalizePsdForAnalysis', 'nearBearingFreq', 'bearingFaultIndex', 'axisRoleOf', 'axialMisalignmentCheck', 'bfiSummaryOf', 'evaluateBfiTrend'],
     names: ['parseSensorSampleRate', 'nextPow2', 'fft', 'ifft', 'computePSD', 'envelopeSpectrum',
       'velocitySpectrumFromAccelPSD', 'rmsAccelFromPSD', 'downsampleSpectrum',
       'ISO_ZONES', 'isoClass', 'isoEvaluate', 'ISO_BASIS_TEXT', 'isoLowSpeedNote',
       'escapeHtml', 'findSeqGaps', 'ENV_SPEC_F_MAX',
       'Q_CLIP_LSB', 'Q_CLIP_MIN_COUNT', 'Q_FLAT_STD_LSB', 'Q_STUCK_RUN', 'Q_SPIKE_LSB', 'Q_LEN_MISMATCH',
-      'assessSignalQuality', 'medianOfNums'],
+      'assessSignalQuality', 'medianOfNums', 'ENV_LINE_GATE', 'ENV_LINE_FLOOR_HZ', 'ENV_LINE_MAX_HALF_HZ', 'suppressDriveLines', 'envOptsFor', 'shaftScale', 'decodeRawBuffer'],
     regions: [['const MAINS_HZ', 'analyzeBearing']],
   });
 
@@ -227,5 +227,101 @@ for(const file of APP_FILES){
     assert.equal(api.evaluateBfiTrend(r(25, 28, 30, 38)), null, 'zaten yüksek seyreden, 15 puan artmamış');
     assert.equal(api.evaluateBfiTrend(r(65)).kind, 'high', 'ilk ölçümde bile %60 üstü');
     assert.equal(api.evaluateBfiTrend(r(null, null, 50)), null, 'geçmişi yok, %60 altında');
+  });
+  // ---- Sürücülü (VFD) motor: taşıyıcı kümesi, zarf bastırma, devir-harmoniği uyarısı ----
+  const FE = 48.4, SP = 2 * FE, FC = 2098;
+  // PWM taşıyıcısı ve ±2fe / ±4fe yan bantları (ölçülen 332.3B kalıbına benzer)
+  const vfdLines = [[FC, 0.5], [FC - SP, 0.35], [FC + SP, 0.35], [FC - 2 * SP, 0.15], [FC + 2 * SP, 0.15]];
+  const vfd = (t) => vfdLines.reduce((s, [f, a]) => s + a * Math.sin(2 * Math.PI * f * t + f), 0);
+  const envAt = (freqs, amp, f) => { let b = 0; for(let k = 0; k < freqs.length; k++){ if(Math.abs(freqs[k] - f) <= 1.5 && amp[k] > b) b = amp[k]; } return b; };
+
+  test(`${file}: sürücü taşıyıcı kümesinden fe bulunuyor, gürültüde bulunmuyor`, () => {
+    const g = rng(31);
+    const { freqs, psd } = api.computePSD(signal((t) => 0.05 * g() + vfd(t)), FS);
+    const fe = api.estimateDriveFe(api.normalizePsdForAnalysis(freqs, psd));
+    assert.ok(fe && Math.abs(fe - FE) < 0.6, `fe ${fe}`);
+    const g2 = rng(32);
+    const n = api.computePSD(signal(() => 0.05 * g2()), FS);
+    assert.equal(api.estimateDriveFe(api.normalizePsdForAnalysis(n.freqs, n.psd)), null);
+    // fe devirle tutarlı olmalı (4 kutuplu: fe ≈ 2×devir×(1+kayma))
+    assert.equal(api.validDriveFe(48.4, 24.01), 48.4);
+    assert.equal(api.validDriveFe(43.65, 24.4), null, 'devirle tutarsız küme reddedilir');
+    // 2fe bir rulman frekansına denk geliyorsa bastırma açılmaz
+    assert.equal(api.envOptsFor(48.4, { BPFO: 96.8, BPFI: 150, BSF: 40 }, 1), null);
+    assert.equal(api.envOptsFor(48.4, { BPFO: 74.3, BPFI: 117.7, BSF: 50.4 }, 1).driveFe, 48.4);
+    assert.equal(api.envOptsFor(48.4, null), null, 'rulman bilgisi yoksa bastırma yok');
+  });
+
+  test(`${file}: rulman darbe tarağı sürücü izi sanılmıyor`, () => {
+    // 6319 @ 24.01 Hz: BPFO 74.3 Hz ≈ 3.1× devir — 6 kutuplu bir motorun fe'sine benzer.
+    const shaft = 24.01;
+    const bF = { BPFO: 3.0959 * shaft, BPFI: 4.9041 * shaft, BSF: 2.0992 * shaft, FTF: 0.3870 * shaft };
+    const g = rng(35);
+    const T = 1 / bF.BPFO;
+    const x = signal((t) => { const tau = t % T; return 0.002 * g() + vfd(t) + 0.25 * Math.exp(-tau * 900) * Math.sin(2 * Math.PI * 1600 * tau); });
+    const { freqs, psd } = api.computePSD(x, FS);
+    const norm = api.normalizePsdForAnalysis(freqs, psd);
+    const fe = api.estimateDriveFe(norm, shaft, bF);
+    assert.ok(fe && Math.abs(fe - FE) < 0.6, `fe ${fe}`);
+    // Sürücü kümesi olmadan sadece darbe tarağı: sürücü izi yok
+    const g2 = rng(36);
+    const y = signal((t) => { const tau = t % T; return 0.002 * g2() + 0.25 * Math.exp(-tau * 900) * Math.sin(2 * Math.PI * 1600 * tau); });
+    const q = api.computePSD(y, FS);
+    assert.equal(api.estimateDriveFe(api.normalizePsdForAnalysis(q.freqs, q.psd), shaft, bF), null);
+  });
+
+  test(`${file}: zarfta sürücü çizgileri bastırılınca rulman darbesi öne çıkıyor`, () => {
+    const g = rng(33);
+    const T = 1 / 74.3; // BPFO hızında 1600 Hz'de çınlayan darbeler + sürücü kümesi
+    const x = signal((t) => {
+      const tau = t % T;
+      return 0.05 * g() + vfd(t) + 0.25 * Math.exp(-tau * 900) * Math.sin(2 * Math.PI * 1600 * tau);
+    });
+    const plain = api.envelopeSpectrum(x, FS, 1300, 2800);
+    const supp = api.envelopeSpectrum(x, FS, 1300, 2800, { driveFe: FE });
+    assert.ok(envAt(plain.freqs, plain.amp, SP) > envAt(plain.freqs, plain.amp, 74.3), 'bastırmasız zarfta 2fe baskın');
+    assert.ok(supp.removedLines.length >= 3, `silinen çizgi ${supp.removedLines.length}`);
+    assert.ok(envAt(supp.freqs, supp.amp, 74.3) > 3 * envAt(supp.freqs, supp.amp, SP),
+      `bastırmalı: BPFO ${envAt(supp.freqs, supp.amp, 74.3)} / 2fe ${envAt(supp.freqs, supp.amp, SP)}`);
+  });
+
+  test(`${file}: sürücü bastırması sürücüsüz rulman arızasını bozmuyor`, () => {
+    const bF = { BPFO: 87.3, BPFI: 129.4, BSF: 57.1, FTF: 9.7 };
+    const g = rng(22);
+    const T = 1 / 87.3;
+    const x = signal((t) => { const tau = t % T; return 0.05 * g() + 0.6 * Math.exp(-tau * 900) * Math.sin(2 * Math.PI * 2000 * tau); });
+    const { freqs, amp } = api.envelopeSpectrum(x, FS, 1300, 2800, { driveFe: FE });
+    const d = api.downsampleSpectrum(freqs, amp, 200, 0, api.ENV_SPEC_F_MAX, 'max');
+    const r = api.bearingFaultIndex(d.f, d.v, bF, 24.4, 50, true);
+    assert.equal(r.top, 'BPFO');
+    assert.ok(r.value > 40, `BPFO skoru ${r.value}`);
+  });
+
+  test(`${file}: BPFO 3× devire çok yakınsa uyarı notu, sürücü çizgisi rulman sayılmıyor`, () => {
+    const shaft = 24.01; // 6319: BPFO 3.0959× → 74.3 Hz, 3× devir 72.0 Hz
+    const bF = { BPFO: 3.0959 * shaft, BPFI: 4.9041 * shaft, BSF: 2.0992 * shaft, FTF: 0.3870 * shaft };
+    const g = rng(34);
+    const x = signal((t) => 0.05 * g() + vfd(t) + sine(74.3, 0.15)(t) + sine(148.6, 0.1)(t) + sine(SP, 0.2)(t));
+    const { freqs, psd } = api.computePSD(x, FS);
+    const r = api.analyzeBearing(freqs, psd, null, bF, { rpm: shaft * 60, shaftHz: shaft });
+    assert.ok(r.level >= 2);
+    assert.ok(r.notes.some((n) => n.includes('3× devire')), r.notes.join(' | '));
+    assert.ok(r.notes.some((n) => n.startsWith('Sürücü (VFD) izi')), 'sürücü notu');
+  });
+
+  test(`${file}: ham veri dosyası (WS3R) çözülüyor`, () => {
+    const n = [3, 2, 1]; // Z, X, Y
+    const buf = new ArrayBuffer(28 + 6 * 2);
+    const dv = new DataView(buf);
+    [0x57, 0x53, 0x33, 0x52].forEach((b, i) => dv.setUint8(i, b));
+    dv.setUint16(4, 1, true); dv.setUint16(6, 3, true); dv.setUint32(8, 6510, true); dv.setFloat32(12, 0.5, true);
+    n.forEach((v, i) => dv.setUint32(16 + i * 4, v, true));
+    [10, -20, 30, 4, 6, -8].forEach((v, i) => dv.setInt16(28 + i * 2, v, true));
+    const r = api.decodeRawBuffer(buf);
+    assert.equal(r.fs, 6510);
+    assert.deepEqual(Array.from(r.axes.Z), [5, -10, 15]);
+    assert.deepEqual(Array.from(r.axes.X), [2, 3]);
+    assert.deepEqual(Array.from(r.axes.Y), [-4]);
+    assert.equal(api.decodeRawBuffer(new ArrayBuffer(10)), null);
   });
 }

@@ -2383,7 +2383,9 @@ function exportComparisonHtmlReport(){
     const bearingCode = bearingCodeForPoint();
     const rpmForMarkers = byTimeDesc[0].rpm || null;
     const bFreqs = computeBearingFrequencies(bearingCode, rpmForMarkers);
-    const bearing = { code: bearingCode, rpm: rpmForMarkers, freqs: bFreqs };
+    const shaftForMarkers = byTimeDesc[0].shaftHz || null;
+    const bearing = { code: bearingCode, rpm: rpmForMarkers, freqs: bFreqs, shaftHz: shaftForMarkers,
+      markerFreqs: scaledBearingFreqs(bearingCode, rpmForMarkers, shaftForMarkers) };
 
     function labelFor(m, i){
       const ts = m.timestamp ? m.timestamp.toDate() : null;
@@ -2468,7 +2470,7 @@ function buildComparisonReportHtml(axesSeries, trend, summaryRows, bearing, char
 
   const bearingSectionHtml = ((bearing && bearing.code) ? `
     <h3 style="font-size:13px; margin:16px 0 6px;">Rulman Arıza Frekansları</h3>
-    ${buildBearingAnalysisPrintHtml(bearing.code, bearing.rpm, bearing.freqs)}
+    ${buildBearingAnalysisPrintHtml(bearing.code, bearing.rpm, bearing.freqs, bearing.shaftHz)}
     <div style="font-size:11px; color:#888; margin-top:4px;">En güncel seçili ölçümün RPM'i (${bearing.rpm ?? '—'}) kullanılarak hesaplanmıştır — farklı ölçümler farklı RPM'de alınmış olabilir.</div>
   ` : '');
 
@@ -2792,7 +2794,7 @@ function rvAttach(chart, canvas, ax, f1, baseMax, rms){
 // ---- /Hız spektrumu araçları ----
 
 const TREND = ${JSON.stringify(trend).replace(/</g,'\\u003c')};
-const BEARING_FREQS = ${JSON.stringify(bearing && bearing.freqs ? bearing.freqs : null)};
+const BEARING_FREQS = ${JSON.stringify(bearing && bearing.freqs ? (bearing.markerFreqs || bearing.freqs) : null)};
 const BEARING_COLORS = ${JSON.stringify(BEARING_FAULT_COLORS)};
 const SERIES_COLORS = ${JSON.stringify(HISTORY_COMPARE_COLORS)};
 let bmVisible = {};   // PSD çizgileri
@@ -3834,6 +3836,13 @@ function scaledBearingFreqs(code, rpm, shaftHz){
   const k = shaftScale(rpm, shaftHz), o = {};
   Object.keys(b).forEach(x=>{ o[x] = b[x]*k; });
   return o;
+}
+// Grafik çizgilerinin ve rulman tablosunun kullandığı mil frekansı: analizle
+// aynı kural — ölçülen devir nominalin %6'sı içindeyse o, değilse null (nominal).
+// Çizgiler eskiden hep girilen RPM'e göre çiziliyordu; analiz ise ölçülen devre
+// göre aradığı için grafikte çizgiye oturan tepe metinde "denk gelmiyor" çıkıyordu.
+function effectiveShaftHz(rpm, shaftHz){
+  return (rpm && shaftHz && shaftScale(rpm, shaftHz) !== 1) ? shaftHz : null;
 }
 
 function envelopeSpectrum(samples, fs, fLow, fHigh, opts){
@@ -4903,6 +4912,9 @@ function showDetail(ax){
   const bearingCode = bearingCodeForPoint();
   const rpmVal = parseFloat(document.getElementById('rpmInput').value) || null;
   const bFreqs = computeBearingFrequencies(bearingCode, rpmVal);
+  const liveShaft = liveShaftHz(rpmVal);
+  // Çizgiler analizle aynı (ölçülen) devirde; analiz fonksiyonlarına nominal bFreqs gider, kendileri ölçekler.
+  const mFreqs = scaledBearingFreqs(bearingCode, rpmVal, liveShaft);
   bearingMarkerVisible = {}; envMarkerVisible = {};
   if(bFreqs){ Object.keys(bFreqs).forEach(key=>{ bearingMarkerVisible[key] = true; envMarkerVisible[key] = true; }); }
 
@@ -4911,7 +4923,7 @@ function showDetail(ax){
     const out = [];
     Object.keys(bFreqs).filter(key=>bearingMarkerVisible[key]).forEach(key=>{
       for(let h=1; h<=5; h++){
-        out.push({ freq: bFreqs[key]*h, label: h===1 ? key : (h+'×'+key), color: BEARING_FAULT_COLORS[key] });
+        out.push({ freq: mFreqs[key]*h, label: h===1 ? key : (h+'×'+key), color: BEARING_FAULT_COLORS[key] });
       }
     });
     return out;
@@ -4930,8 +4942,8 @@ function showDetail(ax){
   btnResetPsd.onclick = ()=> resetZoom(charts.psd, 0, nyquist);
 
   document.getElementById('isoAnalysisText').innerHTML = buildIsoAnalysisHtml(ax);
-  document.getElementById('bearingAnalysisText').innerHTML = buildBearingAnalysisHtml(bearingCode, rpmVal, bFreqs);
-  const anaCtx = bearingCtx(ax, rpmVal, liveShaftHz(rpmVal), axisSpectra[ax].rmsVelocity);
+  document.getElementById('bearingAnalysisText').innerHTML = buildBearingAnalysisHtml(bearingCode, rpmVal, bFreqs, liveShaft);
+  const anaCtx = bearingCtx(ax, rpmVal, liveShaft, axisSpectra[ax].rmsVelocity);
   document.getElementById('psdAnalysisText').innerHTML = buildPsdAnalysisHtml(freqs, psd, bFreqs, anaCtx);
 
   // Zarf (envelope) spektrumu — 1x/2x/3x harmonik çizgileri, PSD panelindeki
@@ -4944,7 +4956,7 @@ function showDetail(ax){
     Object.keys(bFreqs).forEach(key=>{
       if(!envMarkerVisible[key]) return;
       for(let h=1; h<=3; h++){
-        out.push({ freq: bFreqs[key]*h, label: h===1 ? key : (h+'×'+key), color: BEARING_FAULT_COLORS[key] });
+        out.push({ freq: mFreqs[key]*h, label: h===1 ? key : (h+'×'+key), color: BEARING_FAULT_COLORS[key] });
       }
     });
     return out;
@@ -5239,7 +5251,7 @@ function resetZoom(chart, baseMin, baseMax){
 
 // Rulman arıza frekansları için okunabilir HTML metni üretir.
 // Rulman kodu veya RPM tanımlı değilse bilgilendirici uyarı döner.
-function buildBearingAnalysisHtml(code, rpm, freqs){
+function buildBearingAnalysisHtml(code, rpm, freqs, shaftHz){
   if(!code){
     return '<div style="color:var(--text-dim)">Bu ölçüm noktası için rulman kodu tanımlanmamış. Tag düzenleme ekranından ön/arka ölçüm noktası rulman kodunu girerek arıza frekansı analizini görebilirsiniz.</div>';
   }
@@ -5249,17 +5261,18 @@ function buildBearingAnalysisHtml(code, rpm, freqs){
   if(!freqs){
     return `<div style="color:var(--text-dim)">"${escapeHtml(code)}" rulman kodu tanınmıyor — arıza frekansı hesaplanamadı.</div>`;
   }
+  const es = effectiveShaftHz(rpm, shaftHz), bk = es ? es/(rpm/60) : 1;
   const rows = Object.keys(freqs).map(key=>{
     const label = { BPFO:'BPFO — Dış bilezik top geçiş frekansı', BPFI:'BPFI — İç bilezik top geçiş frekansı', BSF:'BSF — Top dönüş frekansı', FTF:'FTF — Kafes temel frekansı' }[key];
     return `<label style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0; border-bottom:1px solid var(--line);">
       <span style="display:flex; align-items:center; gap:8px; min-width:0;">
         <span style="color:${BEARING_FAULT_COLORS[key]};">${label}</span>
       </span>
-      <span style="font-family:'JetBrains Mono',monospace; flex:none;">${freqs[key].toFixed(2)} Hz</span>
+      <span style="font-family:'JetBrains Mono',monospace; flex:none;">${(freqs[key]*bk).toFixed(2)} Hz</span>
     </label>`;
   }).join('');
   return `
-    <div style="font-size:11px; color:var(--text-dim); margin-bottom:8px;">Rulman: ${escapeHtml(code)} · RPM: ${escapeHtml(rpm)} · Mil frekansı: ${(rpm/60).toFixed(2)} Hz</div>
+    <div style="font-size:11px; color:var(--text-dim); margin-bottom:8px;">${bearingShaftLine(code, rpm, es)}</div>
     <div style="font-size:13px;">${rows}</div>
     <div style="font-size:11px; color:var(--text-dim); margin-top:8px;">Çizgileri PSD ve Zarf grafiklerinin hemen üstündeki düğmelerle, her grafikte ayrı ayrı açıp kapatabilirsiniz.</div>`;
 }
@@ -6077,7 +6090,12 @@ function bearingCtx(ax, rpm, shaftHz, rms){
 
 // Rulman arıza frekansları listesi — PDF (açık zemin) versiyonu. Ekrandaki
 // buildBearingAnalysisHtml ile aynı veriyi gösterir, kutucuklar olmadan (statik rapor).
-function buildBearingAnalysisPrintHtml(code, rpm, freqs){
+function bearingShaftLine(code, rpm, es){
+  const base = `Rulman: ${escapeHtml(code)} · RPM: ${escapeHtml(rpm)}`;
+  if(!es) return `${base} · Mil frekansı: ${(rpm/60).toFixed(2)} Hz`;
+  return `${base} (girilen) · Ölçülen devir: ${(es*60).toFixed(0)} rpm · Mil frekansı: ${es.toFixed(2)} Hz — frekanslar ve grafik çizgileri ölçülen devre göre (analizle aynı)`;
+}
+function buildBearingAnalysisPrintHtml(code, rpm, freqs, shaftHz){
   if(!code){
     return '<div style="font-size:12px; color:#888;">Bu ölçüm noktası için rulman kodu tanımlanmamış.</div>';
   }
@@ -6088,13 +6106,14 @@ function buildBearingAnalysisPrintHtml(code, rpm, freqs){
     return `<div style="font-size:12px; color:#888;">"${escapeHtml(code)}" rulman kodu tanınmıyor — arıza frekansı hesaplanamadı.</div>`;
   }
   const labelMap = { BPFO:'BPFO — Dış bilezik top geçiş frekansı', BPFI:'BPFI — İç bilezik top geçiş frekansı', BSF:'BSF — Top dönüş frekansı', FTF:'FTF — Kafes temel frekansı' };
+  const es = effectiveShaftHz(rpm, shaftHz), bk = es ? es/(rpm/60) : 1;
   const rows = Object.keys(freqs).map(key=>`
     <tr>
       <td style="padding:5px 8px; border:1px solid #ccc;">${labelMap[key]}</td>
-      <td style="padding:5px 8px; border:1px solid #ccc; font-family:'JetBrains Mono',monospace;">${freqs[key].toFixed(2)} Hz</td>
+      <td style="padding:5px 8px; border:1px solid #ccc; font-family:'JetBrains Mono',monospace;">${(freqs[key]*bk).toFixed(2)} Hz</td>
     </tr>`).join('');
   return `
-    <div style="font-size:12px; color:#555; margin-bottom:6px;">Rulman: ${escapeHtml(code)} · RPM: ${escapeHtml(rpm)} · Mil frekansı: ${(rpm/60).toFixed(2)} Hz</div>
+    <div style="font-size:12px; color:#555; margin-bottom:6px;">${bearingShaftLine(code, rpm, es)}</div>
     <table style="width:100%; border-collapse:collapse; font-size:12.5px;">${rows}</table>`;
 }
 
@@ -6309,10 +6328,10 @@ function buildEnvelopePrintMarkers(bFreqs){
   return out;
 }
 
-async function buildReportChartImages(getSpec, getEnvSpec, bFreqs, ctxFor){
+async function buildReportChartImages(getSpec, getEnvSpec, bFreqs, ctxFor, markerFreqs){
   const images = {};
-  const psdMarkers = buildPsdPrintMarkers(bFreqs);
-  const envMarkers = buildEnvelopePrintMarkers(bFreqs);
+  const psdMarkers = buildPsdPrintMarkers(markerFreqs || bFreqs);
+  const envMarkers = buildEnvelopePrintMarkers(markerFreqs || bFreqs);
   for(const ax of ['X','Y','Z']){
     const spec = getSpec(ax);
     if(!spec) continue;
@@ -6480,7 +6499,7 @@ function buildPrintReportHtml(chartImages, meta, bearing){
 
     ${bearing && bearing.code ? `
     <h2 style="font-size:15px; margin:20px 0 8px;">Rulman Arıza Frekansları</h2>
-    ${buildBearingAnalysisPrintHtml(bearing.code, bearing.rpm, bearing.freqs)}
+    ${buildBearingAnalysisPrintHtml(bearing.code, bearing.rpm, bearing.freqs, bearing.shaftHz)}
     <div style="font-size:11px; color:#888; margin-top:4px;">Bu frekanslar aşağıdaki İvme PSD grafiklerinde renkli kesikli çizgiler olarak işaretlenmiştir.</div>
     ` : ''}
 
@@ -6532,7 +6551,9 @@ function gatherReportContext(){
   const bearingCode = bearingCodeForPoint();
   const rpmForBearing = meta.rpm && meta.rpm !== '—' ? parseFloat(meta.rpm) : null;
   const bFreqs = computeBearingFrequencies(bearingCode, rpmForBearing);
-  const bearing = { code: bearingCode, rpm: rpmForBearing, freqs: bFreqs };
+  // freqs = nominal (analiz kendisi ölçekler), markerFreqs = grafik çizgileri (ölçülen devre göre)
+  const bearing = { code: bearingCode, rpm: rpmForBearing, freqs: bFreqs, shaftHz: meta.shaftHz || null,
+    markerFreqs: scaledBearingFreqs(bearingCode, rpmForBearing, meta.shaftHz || null) };
   // Otomatik tanı + rulman skoru + sensör yönü (rapor tablosu için)
   try{
     const orient = currentOrientation();
@@ -6568,7 +6589,7 @@ async function printReport(){
   btn.disabled = true;
   btn.textContent = 'Grafikler hazırlanıyor…';
   try{
-    const chartImages = await buildReportChartImages(getSpec, getEnvSpec, bearing.freqs, reportCtxFor(meta, bearing));
+    const chartImages = await buildReportChartImages(getSpec, getEnvSpec, bearing.freqs, reportCtxFor(meta, bearing), bearing.markerFreqs);
     document.getElementById('printReport').innerHTML = buildPrintReportHtml(chartImages, meta, bearing);
     window.print();
   } finally {
@@ -6669,7 +6690,7 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
 
   const bearingSectionHtml = ((bearing && bearing.code) ? `
     <h3 style="font-size:13px; margin:16px 0 6px;">Rulman Arıza Frekansları</h3>
-    ${buildBearingAnalysisPrintHtml(bearing.code, bearing.rpm, bearing.freqs)}
+    ${buildBearingAnalysisPrintHtml(bearing.code, bearing.rpm, bearing.freqs, bearing.shaftHz)}
     <div style="font-size:11px; color:#888; margin-top:4px;">Bu frekanslar aşağıdaki PSD ve Zarf grafiklerinde renkli kesikli çizgiler olarak işaretlenir — her grafiğin hemen üstündeki düğmelerle ayrı ayrı açıp kapatabilirsiniz.</div>
   ` : '');
 
@@ -6991,7 +7012,7 @@ function rvAttach(chart, canvas, ax, f1, baseMax, rms){
 }
 // ---- /Hız spektrumu araçları ----
 
-const BEARING_FREQS = ${JSON.stringify(bearing && bearing.freqs ? bearing.freqs : null)};
+const BEARING_FREQS = ${JSON.stringify(bearing && bearing.freqs ? (bearing.markerFreqs || bearing.freqs) : null)};
 const BEARING_COLORS = ${JSON.stringify(BEARING_FAULT_COLORS)};
 let bmVisible = {};   // PSD çizgileri
 let bmEnvVisible = {}; // Zarf çizgileri — PSD'den bağımsız

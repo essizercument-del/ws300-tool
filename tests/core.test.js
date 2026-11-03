@@ -29,7 +29,7 @@ for(const file of APP_FILES){
       'ISO_ZONES', 'isoClass', 'isoEvaluate', 'ISO_BASIS_TEXT', 'isoLowSpeedNote',
       'escapeHtml', 'findSeqGaps', 'ENV_SPEC_F_MAX',
       'Q_CLIP_LSB', 'Q_CLIP_MIN_COUNT', 'Q_FLAT_STD_LSB', 'Q_STUCK_RUN', 'Q_SPIKE_LSB', 'Q_LEN_MISMATCH',
-      'assessSignalQuality', 'medianOfNums', 'ENV_LINE_GATE', 'ENV_LINE_FLOOR_HZ', 'ENV_LINE_MAX_HALF_HZ', 'suppressDriveLines', 'envOptsFor', 'shaftScale', 'decodeRawBuffer'],
+      'assessSignalQuality', 'medianOfNums', 'ENV_LINE_GATE', 'ENV_LINE_FLOOR_HZ', 'ENV_LINE_MAX_HALF_HZ', 'suppressDriveLines', 'envOptsFor', 'shaftScale', 'effectiveShaftHz', 'decodeRawBuffer'],
     regions: [['const MAINS_HZ', 'analyzeBearing']],
   });
 
@@ -323,5 +323,14 @@ for(const file of APP_FILES){
     assert.deepEqual(Array.from(r.axes.X), [2, 3]);
     assert.deepEqual(Array.from(r.axes.Y), [-4]);
     assert.equal(api.decodeRawBuffer(new ArrayBuffer(10)), null);
+  });
+
+  test(`${file}: grafik çizgileri analizle aynı (ölçülen) devri kullanıyor`, () => {
+    // 1400 rpm girildi, spektrumdan 24.01 Hz ölçüldü (%2.9 fark) → ölçülen kullanılır
+    assert.equal(api.effectiveShaftHz(1400, 24.01), 24.01);
+    // %6'dan fazla sapma → güvenilmez, nominal (null)
+    assert.equal(api.effectiveShaftHz(1400, 26), null);
+    assert.equal(api.effectiveShaftHz(1400, null), null);
+    assert.equal(api.effectiveShaftHz(null, 24), null);
   });
 }

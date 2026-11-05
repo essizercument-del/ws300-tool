@@ -5395,12 +5395,13 @@ function extraFindings(ax){
   if(x.twfV && x.ski){
     out.push({ level:0, title:'Zaman dalgası — crest factor / kurtosis', text:'Oturma geçişi olan ölçümde crest factor/kurtosis yorumlanmadı — ölçümü tekrarlayın.' });
   } else if(x.twfV){
-    let t = x.twfV.text;
+    const items = [x.twfV.text];
     const zone = selTag ? (isoEvaluate(x.ovl, isoClass(selTag.kw, selTag.foundation)) || {}).zone : null;
-    if(x.twfV.level >= 1 && (zone === 'A' || zone === 'B')) t += ` Genel hız seviyesi düşük (Zone ${zone}) olduğu hâlde darbe var: bu tür erken bulguyu hız RMS'i göstermez, crest factor tam bu durumda değerlidir.`;
+    if(x.twfV.level >= 1 && (zone === 'A' || zone === 'B')) items.push(`Genel hız seviyesi düşük (Zone ${zone}) olduğu hâlde darbe var: bu tür erken bulguyu hız RMS'i göstermez, crest factor tam bu durumda değerlidir.`);
     const tr = evaluateCfTrend(cfSeries(ax));
-    if(tr) t += ' ' + cfTrendText(ax, tr);
-    if(st && st.stage === 4 && x.twfV.level === 0) t += ' Not: ileri evrede darbeler sıklaşıp gürültüye karıştığı için crest factor yeniden düşer; bu, yukarıdaki Stage 4 tahminiyle çelişmez.';
+    if(tr) items.push(cfTrendText(ax, tr));
+    if(st && st.stage === 4 && x.twfV.level === 0) items.push('Not: ileri evrede darbeler sıklaşıp gürültüye karıştığı için crest factor yeniden düşer; bu, yukarıdaki Stage 4 tahminiyle çelişmez.');
+    const t = bulletList(items);
     const h = x.twf && x.twf.hp;
     const lvl = Math.max(x.twfV.level, tr ? (tr.kind === 'falling' ? 2 : 1) : 0);
     out.push({ level: lvl, title:'Zaman dalgası — crest factor / kurtosis', text: t,
@@ -5420,20 +5421,27 @@ function extraFindings(ax){
     const s = x.sub, pct = `devir altı bölgede ${s.rms.toFixed(2)} mm/s (10–1000 Hz toplamı ${x.ovl.toFixed(2)} mm/s)`;
     if(s.kind === 'ftf'){
       out.push({ level:1, title:`Devir altı: kafes frekansı FTF (${s.f.toFixed(1)} Hz)`,
-        text:`Rulmanın kafes frekansında (${s.order.toFixed(2)}×) keskin tepe; ${pct}. Kafes hasarı/aşınması ya da yağsızlık; çoğu zaman ileri evre rulman hasarıyla birlikte görülür — Rulman sekmesindeki zarf ve PSD'yi kontrol edin.` });
+        text: bulletList([`Rulmanın kafes frekansında (${s.order.toFixed(2)}×) keskin tepe.`, capFirst(pct) + '.',
+          'Olası neden: kafes hasarı/aşınması ya da yağsızlık; çoğu zaman ileri evre rulman hasarıyla birlikte görülür.',
+          'Kontrol: Rulman sekmesindeki zarf ve PSD.']) });
     } else if(s.kind === 'narrow'){
       const ftfHint = !x.hasCode && s.order >= 0.36 && s.order <= 0.44 ? ' Rulman kodu girilmemiş; 0.36–0.44× aralığı tipik kafes (FTF) frekansıdır, o da olabilir.' : '';
       out.push({ level:1, title:`Devir altında keskin tepe (${s.f.toFixed(1)} Hz = ${s.order.toFixed(2)}×)`,
-        text:`${pct[0].toUpperCase()+pct.slice(1)}. Kayışlı tahrikte kayış frekansı (ve katları) — kayış aşınması, gerginlik; kayış yoksa sürtünme.${ftfHint}` });
+        text: bulletList([capFirst(pct) + '.', 'Kayışlı tahrikte: kayış frekansı (ve katları) — kayış aşınması, gerginlik.', 'Kayış yoksa: sürtünme.'].concat(ftfHint ? [ftfHint.trim()] : [])) });
     } else {
       out.push({ level:1, title:`Devir altında geniş tümsek (${s.band[0].toFixed(0)}–${s.band[1].toFixed(0)} Hz)`,
-        text:`${pct[0].toUpperCase()+pct.slice(1)}; enerji tek tepede değil, yayılmış. Akış/türbülans (pompa, fan) belirtisi: debi ya da yük değişince şekli değişir. Pompada kavitasyon ayrıca yüksek frekansta görülür; WS300'ün ölçüm aralığı (≈3 kHz) bunun için yetersizdir.` });
+        text: bulletList([capFirst(pct) + '; enerji tek tepede değil, yayılmış.', 'Akış/türbülans (pompa, fan) belirtisi: debi ya da yük değişince şekli değişir.', "Pompada kavitasyon ayrıca yüksek frekansta görülür; WS300'ün ölçüm aralığı (≈3 kHz) bunun için yetersizdir."]) });
     }
   }
   return out;
 }
 
 const LEVEL_COLORS = ['#3dffa0', '#ffb238', '#ff5d5d'];
+function bulletList(items){
+  const a = (items || []).filter(Boolean);
+  return a.length ? '<ul style="margin:4px 0 2px; padding-left:18px;">' + a.map(t=>'<li>' + t + '</li>').join('') + '</ul>' : '';
+}
+const capFirst = (t)=> t ? t[0].toUpperCase() + t.slice(1) : t;
 function findingsHtml(list){
   return list.map(f=>`<div class="dg-row"><div class="dg-h" style="color:${LEVEL_COLORS[f.level]}">${escapeHtml(f.title)}</div><div class="dg-b">${f.text}</div></div>`).join('');
 }

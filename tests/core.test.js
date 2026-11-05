@@ -29,6 +29,9 @@ for(const file of APP_FILES){
       'ISO_ZONES', 'isoClass', 'isoEvaluate', 'ISO_BASIS_TEXT', 'isoLowSpeedNote', 'velBandLow',
       'escapeHtml', 'findSeqGaps', 'ENV_SPEC_F_MAX',
       'Q_CLIP_LSB', 'Q_CLIP_MIN_COUNT', 'Q_FLAT_STD_LSB', 'Q_STUCK_RUN', 'Q_SPIKE_LSB', 'Q_LEN_MISMATCH',
+      'SKI_BLOCK_S', 'SKI_DRIFT_RATIO', 'SKI_DRIFT_MIN_G', 'SKI_BAND', 'SKI_VEL_RATIO', 'SKI_VEL_MIN', 'skiSlopeCheck',
+      'TWF_HP_HZ', 'TWF_EDGE_FRAC', 'TWF_MIN_RMS_G', 'CF_WARN', 'CF_HIGH', 'KURT_WARN', 'KURT_HIGH', 'biquadHighpass', 'biquadRun', 'highpassFiltFilt', 'twfStatsOf', 'computeTwfStats', 'twfVerdict', 'evaluateCfTrend',
+      'ELEC_PEAK_GATE', 'ELEC_SHARE_MIN', 'localPeak', 'localFloor', 'electricalCheck', 'SB_GATE', 'sidebandCheck', 'twfSummaryOf', 'evaluateImpactTrend', 'SUB_ENERGY_SHARE', 'SUB_MIN_MMS', 'SUB_NARROW_HZ', 'subSyncCheck',
       'assessSignalQuality', 'medianOfNums', 'ENV_LINE_GATE', 'ENV_LINE_FLOOR_HZ', 'ENV_LINE_MAX_HALF_HZ', 'suppressDriveLines', 'envOptsFor', 'shaftScale', 'effectiveShaftHz', 'decodeRawBuffer'],
     regions: [['const MAINS_HZ', 'analyzeBearing']],
   });
@@ -370,5 +373,113 @@ for(const file of APP_FILES){
     assert.equal(api.effectiveShaftHz(1400, 26), null);
     assert.equal(api.effectiveShaftHz(1400, null), null);
     assert.equal(api.effectiveShaftHz(null, 24), null);
+  });
+
+  test(`${file}: TWF — crest factor / kurtosis gürültüde normal, darbede yüksek`, () => {
+    const g = rng(31);
+    const noise = signal(() => 0.01 * g());
+    const n = api.computeTwfStats(noise, FS);
+    assert.ok(n.hp.cf > 3 && n.hp.cf < 5, `gürültü CF ${n.hp.cf}`);
+    assert.ok(Math.abs(n.hp.kurt - 3) < 0.3, `gürültü kurtosis ${n.hp.kurt}`);
+    assert.equal(api.twfVerdict(n).level, 0);
+    // 77 Hz'de tekrarlayan, 2.1 kHz'de sönen darbeler (dış bilezik) + büyük 1× (filtre bunu eler)
+    const T = 1 / 77;
+    const imp = signal((t) => 0.004 * g() + 0.5 * Math.sin(2 * Math.PI * 24.6 * t) + 0.08 * Math.exp(-(t % T) * 2500) * Math.sin(2 * Math.PI * 2100 * (t % T)));
+    const s = api.computeTwfStats(imp, FS);
+    assert.ok(s.hp.cf >= 6, `darbe CF ${s.hp.cf}`);
+    assert.ok(s.hp.kurt >= 4.5, `darbe kurtosis ${s.hp.kurt}`);
+    assert.ok(s.raw.cf < 2, `ham sinyalde 1× baskın, CF ${s.raw.cf}`);
+    assert.equal(api.twfVerdict(s).level, 2);
+    // sinüs: CF = √2
+    const sn = api.computeTwfStats(signal(sine(50, 1)), FS);
+    assert.ok(Math.abs(sn.raw.cf - Math.SQRT2) < 0.02, `sinüs CF ${sn.raw.cf}`);
+  });
+
+  test(`${file}: CF trendi — tepeden dönüş ve yükseliş`, () => {
+    const p = (cf, rms) => ({ cf, rms, kurt: 3 });
+    const f = api.evaluateCfTrend([p(4, 0.01), p(5.5, 0.012), p(6.5, 0.015), p(4.2, 0.04)]);
+    assert.equal(f && f.kind, 'falling');
+    const r = api.evaluateCfTrend([p(4, 0.01), p(4.1, 0.01), p(6.8, 0.012)]);
+    assert.equal(r && r.kind, 'rising');
+    assert.equal(api.evaluateCfTrend([p(4, 0.01), p(4.2, 0.011), p(4.1, 0.01)]), null);
+    // CF düştü ama RMS artmadı → tepeden dönüş sayılmaz
+    assert.equal(api.evaluateCfTrend([p(4, 0.01), p(6.5, 0.015), p(4.5, 0.015)]), null);
+  });
+
+  test(`${file}: ski-slope (oturma geçişi) yakalanıyor, sağlam ölçüm temiz`, () => {
+    const g = rng(41);
+    const ok = signal((t) => 0.01 * g() + sine(8.3, 0.2)(t) + sine(24.6, 0.3)(t));
+    assert.equal(api.skiSlopeCheck(ok, FS), null, '500 rpm 1× + 1500 rpm sağlam');
+    const ski = signal((t) => 0.01 * g() + sine(24.6, 0.05)(t) + 0.1 * Math.exp(-t / 0.35));
+    const r = api.skiSlopeCheck(ski, FS);
+    assert.ok(r, 'sönen kayma yakalanmalı');
+    api.getAxisSamples().X = Float32Array.from(ski); api.getAxisSamples().Y = Float32Array.from(ok); api.getAxisSamples().Z = Float32Array.from(ok);
+    const issues = api.assessSignalQuality();
+    assert.ok(issues.some(q => q.startsWith('X: ski-slope')), issues.join(' | '));
+    assert.ok(!issues.some(q => q.startsWith('Y:')), issues.join(' | '));
+  });
+
+  test(`${file}: 2×LF elektrik tepesi ayrılıyor, mil harmoniğiyle karışmıyor`, () => {
+    const accFor = (f, v) => v / 1000 * 2 * Math.PI * f / G;
+    const g = rng(51);
+    const fr = 1480 / 60; // 4× = 98.67 Hz, 2×LF = 100 Hz
+    const run = (comps) => {
+      const x = signal((t) => 0.002 * g() + comps.reduce((s, [f, v]) => s + sine(f, accFor(f, v))(t), 0));
+      const { freqs, psd } = api.computePSD(x, FS);
+      const { velAmp, rmsVelocity } = api.velocitySpectrumFromAccelPSD(freqs, psd, 10, 1000);
+      return api.electricalCheck(freqs, velAmp, 50, fr, rmsVelocity);
+    };
+    const e = run([[fr, 2], [100, 2]]);
+    assert.equal(e && e.status, 'electrical');
+    assert.ok(Math.abs(e.f - 100) < 0.5);
+    assert.equal(run([[fr, 2], [4 * fr, 2]]), null, '4× devir tepesi elektrik sayılmamalı');
+    assert.equal(run([[fr, 3]]), null, '2×LF yok');
+    // 4 kutup, sıfıra yakın kayma: 2×LF ile 4× devir çözünürlükte ayrılamaz → belirsiz
+    const fr0 = 24.95;
+    const x = signal((t) => 0.002 * g() + sine(fr0, accFor(fr0, 2))(t) + sine(100, accFor(100, 2))(t));
+    const sp = api.computePSD(x, FS);
+    const vv = api.velocitySpectrumFromAccelPSD(sp.freqs, sp.psd, 10, 1000);
+    assert.equal(api.electricalCheck(sp.freqs, vv.velAmp, 50, fr0, vv.rmsVelocity).status, 'ambiguous');
+  });
+
+  test(`${file}: devir altı — FTF, keskin tepe ve geniş tümsek ayrılıyor`, () => {
+    const g = rng(61);
+    const fr = 24.6, accFor = (f, v) => v / 1000 * 2 * Math.PI * f / G;
+    const ovlOf = (x) => { const sp = api.computePSD(x, FS); return [sp, api.velocitySpectrumFromAccelPSD(sp.freqs, sp.psd, 10, 1000).rmsVelocity]; };
+    const ftf = 0.3838 * fr;
+    let [sp, ovl] = ovlOf(signal((t) => 0.002 * g() + sine(fr, accFor(fr, 2))(t) + sine(ftf, accFor(ftf, 1.5))(t)));
+    assert.equal(api.subSyncCheck(sp.freqs, sp.psd, fr, ovl, ftf).kind, 'ftf');
+    assert.equal(api.subSyncCheck(sp.freqs, sp.psd, fr, ovl, null).kind, 'narrow', 'rulman kodu yoksa keskin tepe');
+    // dar bantlı gürültü (≈ 9–17 Hz) → geniş tümsek
+    const h = new Float64Array(N); { const w = rng(62); let a = 0, b = 0; for(let i=0;i<N;i++){ const v = w(); a = 0.985*a + v; b = 0.9*b + a; h[i] = b; } }
+    const hp = Float64Array.from(h, (v, i) => v - (i ? h[i-1] : 0));
+    const sc = 0.02 / Math.sqrt(hp.reduce((s, v) => s + v*v, 0) / N);
+    [sp, ovl] = ovlOf(signal((t, k) => 0.002 * g() + sine(fr, accFor(fr, 2))(t) + sc * hp[k]));
+    const br = api.subSyncCheck(sp.freqs, sp.psd, fr, ovl, null);
+    assert.ok(br && br.kind === 'broad', JSON.stringify(br));
+    [sp, ovl] = ovlOf(signal((t) => 0.002 * g() + sine(fr, accFor(fr, 2))(t)));
+    assert.equal(api.subSyncCheck(sp.freqs, sp.psd, fr, ovl, ftf), null, 'temiz');
+  });
+
+  test(`${file}: BPFI yan bantları (±1× devir) bulunuyor`, () => {
+    const g = rng(71);
+    const fr = 24.6, bpfi = 4.9292 * fr;
+    const am = signal((t) => 0.003 * g() + 0.05 * (1 + 0.6 * Math.cos(2 * Math.PI * fr * t)) * Math.sin(2 * Math.PI * bpfi * t));
+    const sp = api.computePSD(am, FS);
+    const r = api.sidebandCheck(sp.freqs, sp.psd, bpfi, fr);
+    assert.ok(r.center, 'merkez tepe');
+    assert.equal(r.ones, 2, JSON.stringify(r.sidebands));
+    const pure = api.computePSD(signal((t) => 0.003 * g() + 0.05 * Math.sin(2 * Math.PI * bpfi * t)), FS);
+    assert.equal(api.sidebandCheck(pure.freqs, pure.psd, bpfi, fr).ones, 0, 'modülasyonsuz → yan bant yok');
+  });
+
+  test(`${file}: uyarılar için crest factor özeti ve trendi`, () => {
+    const tw = (cf, rms) => ({ X: { raw: { rms: 0.1 }, hp: { cf, kurt: 3, rms } } });
+    assert.deepEqual({ ...api.twfSummaryOf(tw(4.2, 0.01)).X }, { cf: 4.2, kurt: 3, rms: 0.01 });
+    assert.equal(api.twfSummaryOf(null), null);
+    const rec = [[4, 0.01], [5.6, 0.012], [6.4, 0.015], [4.1, 0.04]].map(([c, r]) => ({ cf: api.twfSummaryOf(tw(c, r)) }));
+    const t = api.evaluateImpactTrend(rec);
+    assert.equal(t.ax, 'X'); assert.equal(t.kind, 'falling');
+    assert.equal(api.evaluateImpactTrend([{ velRMS: {} }, { cf: null }]), null, 'eski özetlerde cf yok');
   });
 }

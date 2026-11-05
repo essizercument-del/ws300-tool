@@ -532,8 +532,6 @@ db.enablePersistence({ synchronizeTabs: true }).catch(err=>{
     <input type="text" id="tagModalBearingOn" placeholder="Ön (DE) rulman kodu — örn. 6309">
     <label class="fld" for="tagModalBearingArka">Arka (NDE) rulman kodu</label>
     <input type="text" id="tagModalBearingArka" placeholder="Arka (NDE) rulman kodu — örn. 6205">
-    <label class="fld" for="tagModalBlades">Kanat sayısı (fan/pompa)</label>
-    <input type="number" id="tagModalBlades" min="0" step="1" placeholder="Fan/pompa kanat sayısı (isteğe bağlı) — örn. 6">
     <div class="orient-box">
       <div class="orient-title">Sensör yönü (isteğe bağlı): sensörün hangi ekseni mile paralel (eksenel), hangisi yukarı-aşağı (dikey) duruyor? Kalan eksen yatay sayılır.</div>
       <div class="orient-row"><span>Ön</span><select id="tagModalOnAxial"><option value="">Eksenel: —</option><option value="X">Eksenel: X</option><option value="Y">Eksenel: Y</option><option value="Z">Eksenel: Z</option></select><select id="tagModalOnVertical"><option value="">Dikey: —</option><option value="X">Dikey: X</option><option value="Y">Dikey: Y</option><option value="Z">Dikey: Z</option></select></div>
@@ -653,14 +651,13 @@ db.enablePersistence({ synchronizeTabs: true }).catch(err=>{
       <p><b style="color:#ff9f43">Dengesizlik</b> — enerjinin tam devir frekansında (1×) toplanan kısmı. Rotorun kütlesi eşit dağılmamış: tipik çözüm balans.</p>
       <p><b style="color:#feca57">Hizalama</b> — devrin 2 katında (2×) toplanan kısım. Motor ile tahrik ettiği makinenin milleri aynı eksende değil (kaplin kaçıklığı). Eksenel yönde 1× de yüksekse bu yorum güçlenir.</p>
       <p><b style="color:#ff6b6b">Gevşeklik</b> — devrin 3–10 katlarında ve buçuklu katlarında (½×, 1½×, 2½×) toplanan kısım. Ayak/gövde cıvatası, yatak yuvası boşluğu ya da çatlak kaide.</p>
-      <p><b style="color:#a29bfe">Kanat geçişi</b> — fanın/pompanın kanat sayısı × devir (BPF) ve katları. Tag ayarlarına kanat sayısı girilirse bu tepeler gevşeklik sanılmaz, ayrı gösterilir. Kanat geçişinin kendisi normaldir; büyümesi kanat hasarı, kirlenme ya da gövdeye yakın çalışmaya işaret eder.</p>
       <p><b style="color:#7c8a80">Diğer</b> — devirle ilgisi olmayan her şey: şebeke/elektrik (50–100 Hz ve katları), rulman, fan/pompa kanadı, akış, rezonans.</p>
       <p><b>Rulman skoru (BFI %)</b>: rulman arıza frekanslarında (BPFO dış bilezik, BPFI iç bilezik, BSF bilye) zarf spektrumunda gürültünün üstünde biriken enerjinin payı. %0 = gürültüden ayırt edilemiyor, %100 = zarf spektrumu tamamen o frekanslardan oluşuyor. Tek ölçümdeki değerden çok, trendde sürekli artması önemlidir: trend kutusunda "Rulman (BFI)" seçeneğiyle izleyin.</p>
       <p>Toplam seviye düşükse (ISO bölge A) paylar yalnızca bilgi amaçlıdır; bir payın büyük olması tek başına arıza demek değildir. Karar için hem toplam seviyeye hem de payın ölçümden ölçüme artıp artmadığına bakın.</p>
     </details>
   </div>
     <div class="ad-panel" id="extraDiagPanel" style="display:none">
-      <div class="ad-title">Diğer bulgular — kanat, elektrik, devir altı, zaman dalgası</div>
+      <div class="ad-title">Diğer bulgular — elektrik, devir altı, zaman dalgası</div>
       <div id="extraDiagRows"></div>
     </div>
   </div>
@@ -1176,7 +1173,6 @@ function openTagModal(title, initial, onSave){
   document.getElementById('tagModalFoundation').value = initial.foundation || 'rijit';
   document.getElementById('tagModalBearingOn').value = initial.bearingOn || '';
   document.getElementById('tagModalBearingArka').value = initial.bearingArka || '';
-  document.getElementById('tagModalBlades').value = initial.bladeCount || '';
   {
     const oOn = initial.orientOn || {}, oAr = initial.orientArka || {};
     document.getElementById('tagModalOnAxial').value = oOn.axial || '';
@@ -1209,8 +1205,6 @@ function openTagModal(title, initial, onSave){
     const foundation = document.getElementById('tagModalFoundation').value;
     const bearingOn = document.getElementById('tagModalBearingOn').value.trim() || null;
     const bearingArka = document.getElementById('tagModalBearingArka').value.trim() || null;
-    const bladesIn = parseInt(document.getElementById('tagModalBlades').value, 10);
-    const bladeCount = (bladesIn >= 2 && bladesIn <= 40) ? bladesIn : null;
     const readOrient = (pre)=>{
       const a = document.getElementById('tagModal'+pre+'Axial').value || null;
       const v = document.getElementById('tagModal'+pre+'Vertical').value || null;
@@ -1222,7 +1216,7 @@ function openTagModal(title, initial, onSave){
       document.getElementById('tagModalOrientErr').style.display = 'block';
       return;
     }
-    const data = {name, kw, foundation, bearingOn, bearingArka, bladeCount, orientOn, orientArka};
+    const data = {name, kw, foundation, bearingOn, bearingArka, orientOn, orientArka};
     const linkCheck = document.getElementById('tagModalQrLinkCheck');
     if(pendingQrCode && linkCheck && linkCheck.checked){
       data.qrCode = pendingQrCode;
@@ -2796,7 +2790,7 @@ function rvOrderInfo(f, f1, binHz){
   if(Math.abs(f - n*f1) <= tolHz){
     if(n === 1) return { order:r, text:'1× devir — dengesizlik belirtisi', cls:'h1' };
     if(n === 2) return { order:r, text:'2× devir — hizalama bozukluğu belirtisi', cls:'h2' };
-    if(n <= 10) return { order:r, text:n+'× devir — mekanik gevşeklik belirtisi (fanda kanat geçişi olabilir)', cls:'h3' };
+    if(n <= 10) return { order:r, text:n+'× devir — mekanik gevşeklik belirtisi', cls:'h3' };
     return { order:r, text:n+'× devir', cls:'' };
   }
   if(r < 0.9) return { order:r, text:'Devir altı — kayış / kafes (FTF) / türbülans olabilir', cls:'warn' };
@@ -4600,12 +4594,6 @@ function computeResults(){
   renderQuickSummary();
 }
 
-// Seçili tag'in fan/pompa kanat sayısı (girilmemişse null).
-function tagBlades(){
-  const b = selTag ? parseInt(selTag.bladeCount, 10) : NaN;
-  return b >= 2 ? b : null;
-}
-
 // Canlı ölçüm için eksen başına otomatik tanıyı hesaplar (devir girilmemişse null).
 function liveAutoDiag(){
   const rpm = parseFloat(document.getElementById('rpmInput').value) || null;
@@ -4618,7 +4606,7 @@ function liveAutoDiag(){
     const sp = axisSpectra[ax];
     if(!sp) return;
     const mains = estimateMainsBase(normalizePsdForAnalysis(sp.freqs, sp.psd), shaftHz, scaledBearingFreqs(code, rpm, shaftHz));
-    axes[ax] = shaftFaultBreakdown(sp.freqs, sp.velAmp, shaftHz, mains, sp.rmsVelocity, tagBlades());
+    axes[ax] = shaftFaultBreakdown(sp.freqs, sp.velAmp, shaftHz, mains, sp.rmsVelocity);
     const env = liveEnvDown(ax);
     bfi[ax] = env ? bfiFor(env.f, env.v, code, rpm, est, mains) : null;
   });
@@ -4789,7 +4777,7 @@ function renderAutoDiag(){
 }
 
 // ============================================================
-// EK TANILAR — kanat geçişi, 2×LF (elektrik), devir altı, zaman dalgası (TWF)
+// EK TANILAR — 2×LF (elektrik), devir altı, zaman dalgası (TWF)
 // Canlı ölçüm için eksen başına hesaplanır; ayrıntı ekranlarda gösterilir,
 // ana ekranda yalnızca kısa özet durur.
 // ============================================================
@@ -4809,14 +4797,8 @@ function axisExtraDiag(ax){
   const elec = electricalCheck(sp.freqs, sp.velAmp, lf, shaftHz, sp.rmsVelocity);
   const ftfHz = bF ? bF.FTF : null;
   const sub = shaftHz ? subSyncCheck(sp.freqs, sp.psd, shaftHz, sp.rmsVelocity, ftfHz) : null;
-  const blades = tagBlades();
-  let blade = null;
-  if(blades && shaftHz){
-    const ad = shaftFaultBreakdown(sp.freqs, sp.velAmp, shaftHz, lf, sp.rmsVelocity, blades);
-    if(ad) blade = { bpf: blades*shaftHz, share: ad.shares.blade, mms: ad.parts.blade };
-  }
   return { ax, rpm, shaftHz, lf, lfDrive: !!drive, elec, sub, ftfHz, hasCode: !!bF,
-           twf: sp.twf || null, twfV: twfVerdict(sp.twf), blades, blade, ski: sp.ski || null, ovl: sp.rmsVelocity };
+           twf: sp.twf || null, twfV: twfVerdict(sp.twf), ski: sp.ski || null, ovl: sp.rmsVelocity };
 }
 
 // Bu noktanın kayıtlı ölçümleri + (henüz kaydedilmediyse) canlı ölçüm: >1 kHz CF serisi.
@@ -4854,10 +4836,6 @@ function extraFindings(ax){
     out.push({ level: lvl, title:'Zaman dalgası — crest factor / kurtosis', text: t,
       short: tr && tr.kind === 'falling' ? `CF tepeden dönüyor (${tr.peakCf.toFixed(1)} → ${tr.cf.toFixed(1)}), RMS artıyor` : (h && h.cf != null ? `${x.twfV.level === 2 ? 'Darbeli sinyal' : 'Sınırda darbelilik'}: CF ${h.cf.toFixed(1)}, kurtosis ${h.kurt.toFixed(1)}` : null) });
   }
-  if(x.blade && x.blade.share >= 0.05){
-    out.push({ level: x.blade.share >= 0.5 ? 1 : 0, short:`Kanat geçişi baskın (%${Math.round(x.blade.share*100)})`, title:`Kanat geçişi (BPF ${x.blade.bpf.toFixed(1)} Hz = ${x.blades} × devir)`,
-      text:`Toplam hızın %${Math.round(x.blade.share*100)}'i (${x.blade.mms.toFixed(2)} mm/s) kanat geçişi ve katlarında; bu tepeler gevşeklik sayılmadı. Kanat geçişi fanlarda normaldir — payı ölçümden ölçüme artıyorsa kanat hasarı, kirlenme/birikinti ya da kanadın gövdeye yakın çalışması kontrol edilmeli.` });
-  }
   if(x.elec){
     const lfTxt = x.lfDrive ? `sürücü çıkışı fe ≈ ${x.lf.toFixed(1)} Hz` : `şebeke ${x.lf.toFixed(1)} Hz varsayıldı`;
     if(x.elec.status === 'ambiguous'){
@@ -4894,8 +4872,7 @@ function buildAxisDiagHtml(ax){
   const x = axisExtraDiag(ax);
   let html = list.length ? findingsHtml(list) : '<div class="dg-b">Ek bulgu yok.</div>';
   const notes = [];
-  if(x && !x.rpm) notes.push('Devir (RPM) girilmediği için kanat geçişi, 2×LF/mil harmoniği ayrımı ve devir altı analizi yapılamadı.');
-  if(x && x.rpm && !x.blades) notes.push('Fan/pompa ise tag ayarlarına kanat sayısını girin — kanat geçişi tepeleri gevşeklikten ayrılır.');
+  if(x && !x.rpm) notes.push('Devir (RPM) girilmediği için 2×LF/mil harmoniği ayrımı ve devir altı analizi yapılamadı.');
   if(notes.length) html += `<div class="vp-note">${notes.join('<br>')}</div>`;
   return html;
 }
@@ -4915,7 +4892,7 @@ function renderExtraDiag(){
     if(!list.length) return;
     html += `<div style="margin-top:8px; font-size:12px; font-weight:700; color:${AXIS_COLORS[ax]}">${ax} ekseni</div>` + findingsHtml(list);
   });
-  rows.innerHTML = (html || '<div class="dg-b">Dikkat gerektiren ek bulgu yok (zaman dalgası, 2×LF, devir altı, kanat geçişi).</div>')
+  rows.innerHTML = (html || '<div class="dg-b">Dikkat gerektiren ek bulgu yok (zaman dalgası, 2×LF, devir altı).</div>')
     + '<div class="vp-note">Her eksenin tüm değerleri ve açıklamaları: eksen kartına dokunun → "Tanılar" sekmesi.</div>';
 }
 
@@ -5167,7 +5144,7 @@ function velShaftHz(rpm){
 // Bir frekansı devir katına göre sınıflandırır → {order, text, cls}
 // Tolerans Hz cinsinden: spektrum çözünürlüğü (tam çözünürlükte 1 Hz, karşılaştırma
 // modunda ≈3.3 Hz'lik kutular) ve devir tahmini belirsizliği (%2) birlikte hesaba katılır.
-// ctx (isteğe bağlı): { blades, lf, ftf } — kanat geçişi, 2×LF (elektrik) ve kafes (FTF) etiketleri için.
+// ctx (isteğe bağlı): { lf, ftf } — 2×LF (elektrik) ve kafes (FTF) etiketleri için.
 function velOrderInfo(f, f1, binHzOverride, ctx){
   if(!f1) return { order:null, text:'RPM girilmemiş', cls:'' };
   const r = f / f1;
@@ -5175,13 +5152,6 @@ function velOrderInfo(f, f1, binHzOverride, ctx){
   const binHz = binHzOverride || ((velPanelState && velPanelState.compare && velPanelState.prevPts) ? 3.5 : 1.5);
   const tolHz = Math.max(binHz, 0.02 * n * f1);
   if(ctx){
-    if(ctx.blades >= 2){
-      for(let k=1;k<=3;k++){
-        const bf = k*ctx.blades*f1;
-        if(Math.abs(f - bf) <= Math.max(binHz, 0.02*k*ctx.blades*f1))
-          return { order:r, text:(k===1?'BPF':k+'×BPF')+' — kanat geçişi ('+ctx.blades+' kanat × devir)', cls:'h2' };
-      }
-    }
     if(ctx.lf > 0){
       const e2 = 2*ctx.lf;
       if(Math.abs(f - e2) <= Math.max(binHz/2, 0.5) && Math.abs(f - e2) < Math.abs(f - n*f1))
@@ -5193,7 +5163,7 @@ function velOrderInfo(f, f1, binHzOverride, ctx){
   if(Math.abs(f - n*f1) <= tolHz){
     if(n === 1) return { order:r, text:'1× devir — dengesizlik belirtisi', cls:'h1' };
     if(n === 2) return { order:r, text:'2× devir — hizalama bozukluğu belirtisi', cls:'h2' };
-    if(n <= 10) return { order:r, text:n+'× devir — mekanik gevşeklik belirtisi (fanda kanat geçişi olabilir)', cls:'h3' };
+    if(n <= 10) return { order:r, text:n+'× devir — mekanik gevşeklik belirtisi', cls:'h3' };
     return { order:r, text:n+'× devir', cls:'' };
   }
   if(r < 0.9) return { order:r, text:'Devir altı — kayış / kafes (FTF) / türbülans olabilir', cls:'warn' };
@@ -5317,10 +5287,6 @@ function velOrderMarkers(){
   for(let h=1; h<=10 && h*s.f1<=VEL_F_HIGH; h++){
     out.push({ freq: h*s.f1, label: h+'×', color: h===1 ? '#ff9f43' : (h===2 ? '#feca57' : '#6c7a70') });
   }
-  const b = s.ctx && s.ctx.blades;
-  if(b >= 2){
-    for(let k=1; k<=3 && k*b*s.f1<=VEL_F_HIGH; k++) out.push({ freq: k*b*s.f1, label: k===1 ? 'BPF' : k+'×BPF', color:'#a29bfe' });
-  }
   if(s.ctx && s.ctx.lf > 0) out.push({ freq: 2*s.ctx.lf, label:'2×LF', color:'#5ec8ff' });
   return out;
 }
@@ -5406,7 +5372,7 @@ function setupVelPanel(ax){
   const fx = axisExtraDiag(ax);
   velPanelState = { ax, rpm, f1: f1v, fullPts, binnedPts, prevPts, prevLabel,
                     compare: keepCompare && !!prevPts, showOrders: true, cursorF: null,
-                    ctx: { blades: tagBlades(), lf: fx ? fx.lf : null, ftf: fx ? fx.ftfHz : null } };
+                    ctx: { lf: fx ? fx.lf : null, ftf: fx ? fx.ftfHz : null } };
 
   if(charts.vel) charts.vel.destroy();
   const opts = chartOptions('Hz', 'mm/s', false, VEL_F_HIGH);
@@ -5501,7 +5467,7 @@ function histRenderReadout(){
     return;
   }
   const f = s.cursorF;
-  const info = velOrderInfo(f, s.f1, 3.5, { blades: tagBlades() });
+  const info = velOrderInfo(f, s.f1, 3.5);
   const vals = c.data.datasets.map(ds=>{
     const k = histNearest(ds.data, f);
     const y = k == null ? null : ds.data[k].y;
@@ -5535,7 +5501,7 @@ function histRenderPeaks(){
   }
   if(!peaks.length){ el.innerHTML=''; return; }
   const rows = peaks.map(p=>{
-    const info = velOrderInfo(p.x, s.f1, 3.5, { blades: tagBlades() });
+    const info = velOrderInfo(p.x, s.f1, 3.5);
     return '<tr data-f="'+p.x+'"><td class="num">'+p.x.toFixed(1)+'</td><td class="num">'+p.y.toFixed(2)+'</td>'+
       '<td class="num">'+(info.order!=null?info.order.toFixed(2)+'×':'—')+'</td><td class="vr-info '+info.cls+'">'+info.text+'</td></tr>';
   }).join('');
@@ -6218,13 +6184,9 @@ function estimateMainsBase(norm, shaftHz, bFreqs){
 // Pay = OVL × (bant enerjisi / toplam enerji): paylar doğrusal toplanınca OVL'yi
 // verir (çubuk grafikte tam doluluk). velAmp, Σ velAmp² = OVL² olacak şekilde
 // her frekans noktasının RMS katkısıdır (velocitySpectrumFromAccelPSD).
-// Kanat sayısı (tag'de bladeCount) girilmişse kanat geçiş frekansı BPF = kanat × devir ve
-// 2×, 3× katları ayrı "kanat geçişi" payına yazılır — fanlarda 5×–8× tepeleri aksi halde
-// gevşeklik sanılırdı.
-const AD_KEYS = ['unbalance','misalignment','looseness','blade','other'];
-const AD_LABELS = { unbalance:'Dengesizlik', misalignment:'Hizalama', looseness:'Gevşeklik', blade:'Kanat geçişi', other:'Diğer' };
-const AD_COLORS = { unbalance:'#ff9f43', misalignment:'#feca57', looseness:'#ff6b6b', blade:'#a29bfe', other:'#7c8a80' };
-const AD_BLADE_HARMONICS = 3;
+const AD_KEYS = ['unbalance','misalignment','looseness','other'];
+const AD_LABELS = { unbalance:'Dengesizlik', misalignment:'Hizalama', looseness:'Gevşeklik', other:'Diğer' };
+const AD_COLORS = { unbalance:'#ff9f43', misalignment:'#feca57', looseness:'#ff6b6b', other:'#7c8a80' };
 const AD_MAX_HARMONIC = 10;
 const AD_DOMINANT_SHARE = 0.4; // bir kaynağın "baskın" sayılması için toplam enerjideki asgari payı
 // Buçuklu katlar 2.5×'te kesilir: 62xx/63xx rulmanların BPFO'su (3.0–3.6×) ve
@@ -6237,15 +6199,8 @@ function adHalfWidth(target){ return Math.max(1.2, 0.012*target); }
 
 // Bir frekansı kategoriye atar. Şebeke harmoniğine mil harmoniğinden daha yakın
 // olan noktalar "diğer"e gider (ör. 1490 rpm'de 2× = 49.7 Hz ile 50 Hz iç içe).
-function adCategoryOf(f, shaftHz, mainsHz, blades){
+function adCategoryOf(f, shaftHz, mainsHz){
   let best = null, bestR = Infinity;
-  if(blades >= 2){
-    for(let k=1; k<=AD_BLADE_HARMONICS; k++){
-      const target = k*blades*shaftHz;
-      const r = Math.abs(f - target)/adHalfWidth(target);
-      if(r <= 1 && r < bestR){ bestR = r; best = 'blade'; }
-    }
-  }
   for(let h=1; h<=2*AD_MAX_HARMONIC; h++){
     const order = h/2;
     if(order > AD_MAX_HALF_ORDER && h % 2) continue;
@@ -6254,20 +6209,12 @@ function adCategoryOf(f, shaftHz, mainsHz, blades){
     if(r <= 1 && r < bestR){ bestR = r; best = order; }
   }
   if(best === null) return 'other';
-  // Kanat katı aynı zamanda bir mil katıdır (eşit uzaklık) — kanat öncelikli.
-  if(blades >= 2){
-    for(let k=1; k<=AD_BLADE_HARMONICS; k++){
-      const target = k*blades*shaftHz;
-      if(Math.abs(f - target)/adHalfWidth(target) <= bestR + 1e-9){ best = 'blade'; break; }
-    }
-  }
   const base = mainsHz || MAINS_HZ;
   const k = Math.round(f/base);
   if(k >= 1){
     const m = k*base, tol = Math.max(1.0, 0.006*m);
     if(Math.abs(f - m) <= tol && Math.abs(f - m)/tol < bestR) return 'other';
   }
-  if(best === 'blade') return 'blade';
   if(best === 1) return 'unbalance';
   if(best === 2) return 'misalignment';
   return 'looseness';
@@ -6276,16 +6223,16 @@ function adCategoryOf(f, shaftHz, mainsHz, blades){
 // f, velAmp: tam çözünürlüklü hız spektrumu. ovl: o eksenin toplam hız RMS'i (mm/s).
 // Dönüş: { parts:{unbalance,misalignment,looseness,other} (mm/s), shares:{…} (0–1),
 //          dominant: anahtar|null } — devir yoksa null.
-function shaftFaultBreakdown(f, velAmp, shaftHz, mainsHz, ovl, blades){
+function shaftFaultBreakdown(f, velAmp, shaftHz, mainsHz, ovl){
   if(!f || !f.length || !(shaftHz > 0)) return null;
-  const e = { unbalance:0, misalignment:0, looseness:0, blade:0, other:0 };
+  const e = { unbalance:0, misalignment:0, looseness:0, other:0 };
   let total = 0;
   for(let i=0;i<f.length;i++){
     const a = velAmp[i];
     if(!(a > 0)) continue;
     const p = a*a;
     total += p;
-    e[adCategoryOf(f[i], shaftHz, mainsHz, blades)] += p;
+    e[adCategoryOf(f[i], shaftHz, mainsHz)] += p;
   }
   if(!(total > 0)) return null;
   const level = (ovl > 0) ? ovl : Math.sqrt(total);
@@ -6295,7 +6242,7 @@ function shaftFaultBreakdown(f, velAmp, shaftHz, mainsHz, ovl, blades){
     parts[k] = Math.round(level*shares[k]*100)/100;
   });
   let dominant = null, dv = 0;
-  ['unbalance','misalignment','looseness','blade'].forEach(k=>{
+  ['unbalance','misalignment','looseness'].forEach(k=>{
     if(shares[k] >= AD_DOMINANT_SHARE && shares[k] > dv){ dv = shares[k]; dominant = k; }
   });
   return { parts, shares, dominant };
@@ -7201,7 +7148,7 @@ function buildDiagPrintHtml(meta){
   if(!d || (!d.axes && !d.bfi)) return '';
   const th = 'padding:6px; border:1px solid #ccc; text-align:left; font-size:12px;';
   const td = 'padding:6px; border:1px solid #ccc; font-size:12px;';
-  const cats = ['unbalance','misalignment','looseness','blade','other'];
+  const cats = ['unbalance','misalignment','looseness','other'];
   let rows = '';
   ['X','Y','Z'].forEach(ax=>{
     const p = d.axes && d.axes[ax];
@@ -7219,9 +7166,9 @@ function buildDiagPrintHtml(meta){
   const axialChk = d.axes ? axialMisalignmentCheck(Object.fromEntries(['X','Y','Z'].filter(a=>d.axes[a]).map(a=>[a,{parts:d.axes[a]}])), d.orient) : null;
   return `
     <h2 style="font-size:15px; margin:20px 0 6px;">Otomatik Tanı ve Rulman Skoru</h2>
-    <div style="font-size:11.5px; color:#555; margin-bottom:6px; line-height:1.5;">Toplam hız (mm/s) spektrumdaki yerine göre paylara bölünmüştür: Dengesizlik = 1× devir, Hizalama = 2×, Gevşeklik = 3×–10× ve ½× katları, Kanat = kanat sayısı × devir ve katları (tag'de kanat sayısı girildiyse), Diğer = devirden bağımsız (şebeke, rulman, akış…). Rulman skoru (BFI %): zarf spektrumunda BPFO/BPFI/BSF frekanslarında gürültünün üstünde biriken enerjinin payı; tek değerden çok ölçümden ölçüme artışı önemlidir.${d.shaftNote ? ' ' + d.shaftNote : ''}</div>
+    <div style="font-size:11.5px; color:#555; margin-bottom:6px; line-height:1.5;">Toplam hız (mm/s) spektrumdaki yerine göre paylara bölünmüştür: Dengesizlik = 1× devir, Hizalama = 2×, Gevşeklik = 3×–10× ve ½× katları, Diğer = devirden bağımsız (şebeke, rulman, akış…). Rulman skoru (BFI %): zarf spektrumunda BPFO/BPFI/BSF frekanslarında gürültünün üstünde biriken enerjinin payı; tek değerden çok ölçümden ölçüme artışı önemlidir.${d.shaftNote ? ' ' + d.shaftNote : ''}</div>
     <table style="width:100%; border-collapse:collapse;">
-      <tr style="background:#eee;"><th style="${th}">Eksen</th><th style="${th}">Toplam</th><th style="${th}">Dengesizlik</th><th style="${th}">Hizalama</th><th style="${th}">Gevşeklik</th><th style="${th}">Kanat</th><th style="${th}">Diğer</th><th style="${th}">Rulman skoru</th></tr>
+      <tr style="background:#eee;"><th style="${th}">Eksen</th><th style="${th}">Toplam</th><th style="${th}">Dengesizlik</th><th style="${th}">Hizalama</th><th style="${th}">Gevşeklik</th><th style="${th}">Diğer</th><th style="${th}">Rulman skoru</th></tr>
       ${rows}
     </table>
     ${axialChk ? `<div style="font-size:12px; margin-top:6px; padding:6px 8px; border:1px solid #d9a400; background:#fff8e0; border-radius:4px;"><b>Eksenel 1× yüksek:</b> eksenel yöndeki (${d.orient.axial}) 1× hız radyal 1×'in %${Math.round(axialChk.ratio*100)}'i — hizalama bozukluğu / eğik mil olasılığı; kaplin hizasını kontrol edin.</div>` : ''}
@@ -7626,7 +7573,7 @@ function rvOrderInfo(f, f1, binHz){
   if(Math.abs(f - n*f1) <= tolHz){
     if(n === 1) return { order:r, text:'1× devir — dengesizlik belirtisi', cls:'h1' };
     if(n === 2) return { order:r, text:'2× devir — hizalama bozukluğu belirtisi', cls:'h2' };
-    if(n <= 10) return { order:r, text:n+'× devir — mekanik gevşeklik belirtisi (fanda kanat geçişi olabilir)', cls:'h3' };
+    if(n <= 10) return { order:r, text:n+'× devir — mekanik gevşeklik belirtisi', cls:'h3' };
     return { order:r, text:n+'× devir', cls:'' };
   }
   if(r < 0.9) return { order:r, text:'Devir altı — kayış / kafes (FTF) / türbülans olabilir', cls:'warn' };

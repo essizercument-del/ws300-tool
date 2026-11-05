@@ -337,21 +337,6 @@ for(const file of APP_FILES){
     assert.equal(api.effectiveShaftHz(null, 24), null);
   });
 
-  test(`${file}: kanat geçişi (BPF) gevşeklik sayılmıyor`, () => {
-    const fr = 24.6, accFor = (f, v) => v / 1000 * 2 * Math.PI * f / G;
-    const g = rng(21);
-    const x = signal((t) => 0.002 * g() + sine(fr, accFor(fr, 1))(t) + sine(6 * fr, accFor(6 * fr, 4))(t) + sine(12 * fr, accFor(12 * fr, 1))(t));
-    const { freqs, psd } = api.computePSD(x, FS);
-    const { velAmp, rmsVelocity } = api.velocitySpectrumFromAccelPSD(freqs, psd, 10, 1000);
-    const without = api.shaftFaultBreakdown(freqs, velAmp, fr, 50, rmsVelocity);
-    assert.equal(without.dominant, 'looseness', 'kanat sayısı yokken 6× gevşeklik sayılır');
-    const withB = api.shaftFaultBreakdown(freqs, velAmp, fr, 50, rmsVelocity, 6);
-    assert.equal(withB.dominant, 'blade');
-    assert.ok(withB.shares.looseness < 0.05, `gevşeklik payı ${withB.shares.looseness}`);
-    const sum = Object.values(withB.parts).reduce((a, b) => a + b, 0);
-    assert.ok(Math.abs(sum - rmsVelocity) < 0.03, 'paylar toplamı OVL');
-  });
-
   test(`${file}: TWF — crest factor / kurtosis gürültüde normal, darbede yüksek`, () => {
     const g = rng(31);
     const noise = signal(() => 0.01 * g());

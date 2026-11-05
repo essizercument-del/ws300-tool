@@ -73,6 +73,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
 //                 accelPSD→accel_psd, envelope→envelope, shaftHz→shaft_hz,
 //                 sampleRate→sample_rate, autoDiag→auto_diag (json), bfi→bfi (json),
 //                 twf→twf (json: eksen başına RMS/+PK/crest factor/kurtosis),
+//                 velBandLow→vel_band_low (number: hız bandının alt sınırı, Hz),
 //                 ham veri → raw (dosya)
 //
 // Çevrimdışı tampon: ölçüm kaydı sırasında sunucuya ulaşılamazsa ölçüm
@@ -211,7 +212,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     measurements: { pb:'measurements', parent:'tag', map:{ point:'point', rpm:'rpm', source:'source', note:'note',
             isoClass:'iso_class', timestamp:'measured_at', sampleRate:'sample_rate', isoZone:'iso_zone',
             velSpectrum:'vel_spectrum', accelPSD:'accel_psd', envelope:'envelope', shaftHz:'shaft_hz',
-            autoDiag:'auto_diag', bfi:'bfi', twf:'twf' } }
+            autoDiag:'auto_diag', bfi:'bfi', twf:'twf', velBandLow:'vel_band_low' } }
   };
   const IGNORE = { createdAt:1, _rawBlob:1 };
   function fieldName(name, f){ return SPEC[name].map[f] || f; }
@@ -1676,14 +1677,21 @@ function escapeHtml(v){
 //   Grup 1: 300 kW < P < 50 MW (mil yüksekliği ≥ 315 mm)
 // 15 kW ve altı 10816-3 kapsamında değildir; onlar için ISO 10816-1 Sınıf I sınırları kullanılır.
 // Grup, motor gücünden (kW) belirlenir; mil yüksekliği sorulmaz.
-const ISO_BASIS_TEXT = 'Değerlendirme: ISO 10816-3 (15 kW üstü endüstriyel makineler, makine grubu + temel tipi), 10–1000 Hz hız RMS; 15 kW ve altı için ISO 10816-1 Sınıf I. ISO 10816 serisinin yerini ISO 20816 almıştır; sınırlar genel kılavuz niteliğindedir.';
+const ISO_BASIS_TEXT = 'Değerlendirme: ISO 10816-3 (15 kW üstü endüstriyel makineler, makine grubu + temel tipi), 10–1000 Hz hız RMS (600 rpm altında alt sınır devre göre düşürülür); 15 kW ve altı için ISO 10816-1 Sınıf I. ISO 10816 serisinin yerini ISO 20816 almıştır; sınırlar genel kılavuz niteliğindedir.';
 // 600 rpm altında 1× devir frekansı 10 Hz'in altına düşer ve 10–1000 Hz bandına
-// girmez; standart bu makineler için 2–1000 Hz öngörür. Bant bilerek değiştirilmiyor
-// (≈2 sn'lik kayıtta ivmeden hıza çevirirken 10 Hz altı gürültü büyür), uyarı veriliyor.
-function isoLowSpeedNote(rpm){
+// girmez; standart bu makineler için 2–1000 Hz öngörür. Hız bandının alt sınırı bu
+// yüzden devre göre düşürülür (velBandLow): 1× devrin %70'i, 2–10 Hz arasında.
+// Doğrudan 2 Hz'e inilmez: ≈2 sn'lik kayıtta ivmeden hıza çevirirken (1/f) çok düşük
+// frekanstaki gürültü fiziksel olmayan şekilde büyür; %70 sınırı 1×'i bandın içine alır.
+// fLow: ölçümün gerçekte hesaplandığı alt sınır (Hz). Verilmezse eski 10 Hz kabul edilir.
+function isoLowSpeedNote(rpm, fLow){
   const r = parseFloat(rpm);
   if(!(r > 0) || r >= 600) return '';
-  return `Devir ${Math.round(r)} rpm (600 rpm altı): 1× devir frekansı ${(r/60).toFixed(1)} Hz, ölçüm bandının (10–1000 Hz) altında kalıyor. Standart bu makineler için 2–1000 Hz öngörür; gösterilen RMS ve bölge olduğundan düşük olabilir.`;
+  const head = `Devir ${Math.round(r)} rpm (600 rpm altı): 1× devir frekansı ${(r/60).toFixed(1)} Hz.`;
+  if(fLow > 0 && fLow < 10){
+    return `${head} Hız RMS'i bu yüzden ${fLow.toFixed(1)}–1000 Hz bandında hesaplandı (1× bandın içinde). Standart 120–600 rpm için 2–1000 Hz öngörür; alt sınır, kısa kayıtta düşük frekans gürültüsü büyümesin diye 1× devrin %70'inde tutuldu. Bu noktanın 10–1000 Hz ile alınmış eski kayıtlarıyla karşılaştırırken seviye farkı olabilir.`;
+  }
+  return `${head} Ölçüm bandının (10–1000 Hz) altında kalıyor. Standart bu makineler için 2–1000 Hz öngörür; gösterilen RMS ve bölge olduğundan düşük olabilir.`;
 }
 // Dönüş: 'I' (≤15 kW) | 'G2R' | 'G2F' | 'G1R' | 'G1F'  (G=grup, R=rijit, F=esnek)
 function isoClass(kw, foundation){
@@ -2100,11 +2108,12 @@ async function saveMeasurementToFirestore(qualityIssues){
     envelope: {}
   };
   for(const ax of ['X','Y','Z']){
-    const {freqs, psd, velAmp, rmsVelocity} = axisSpectra[ax];
+    const {freqs, psd, velAmp, rmsVelocity, velBand} = axisSpectra[ax];
+    doc.velBandLow = velBand ? velBand[0] : VEL_F_LOW; // bu alan olmayan kayıtlar 10–1000 Hz
     doc.velRMS[ax] = Math.round(rmsVelocity*1000)/1000;
     const v = isoEvaluate(rmsVelocity, cls);
     doc.isoZone[ax] = v ? v.zone : null;
-    doc.velSpectrum[ax] = downsampleSpectrum(freqs, velAmp, 300, VEL_F_LOW, VEL_F_HIGH);
+    doc.velSpectrum[ax] = downsampleSpectrum(freqs, velAmp, 300, doc.velBandLow, VEL_F_HIGH);
     doc.accelPSD[ax] = downsampleSpectrum(freqs, psd, 640, 0, SAMPLE_RATE_HZ/2, 'max');
     // Zarf spektrumu — küçük (200 nokta, 0-500Hz) olduğu için maliyeti ihmal
     // edilebilir düzeyde; geçmiş ölçümlerde de zarf grafiği/analizi görülebilsin diye.
@@ -4741,9 +4750,15 @@ function computePSD(samples, fs){
   const re = new Float64Array(N);
   const im = new Float64Array(N);
   let winSumSq = 0;
+  // Ortalama (DC — dikey eksende ~1 g yerçekimi dahil) çıkarılır: Hann penceresinin
+  // yan lobları DC'yi ilk birkaç Hz'e sızdırır; 10 Hz altına inen düşük devir bandında
+  // bu sızıntı 1/f ile büyüyüp hız RMS'ini şişirirdi.
+  let mean = 0;
+  for(let i=0;i<N0;i++) mean += samples[i];
+  mean = N0 ? mean/N0 : 0;
   for(let i=0;i<N0;i++){
     const w = 0.5 - 0.5*Math.cos(2*Math.PI*i/(N0-1)); // Hann
-    re[i] = samples[i]*w;
+    re[i] = (samples[i]-mean)*w;
     winSumSq += w*w;
   }
   fft(re, im);
@@ -4860,7 +4875,22 @@ function floorLogSeries(values){
 }
 
 const AXIS_COLORS = {X:'#ff6b6b', Y:'#5ec8ff', Z:'#3dffa0'};
-const VEL_F_LOW = 10, VEL_F_HIGH = 1000; // ISO 10816 pratiği
+const VEL_F_LOW = 10, VEL_F_HIGH = 1000; // ISO 10816 pratiği (600 rpm ve üstü)
+const VEL_F_MIN_LOW = 2;                 // düşük devirde inilebilecek en alt sınır (ISO 10816-3, 120–600 rpm)
+// Hız RMS/spektrum bandının alt sınırı (Hz). 600 rpm ve üstünde 10 Hz; altında
+// 1× devrin %70'i (2–10 Hz arasına sıkıştırılır) — bkz. isoLowSpeedNote.
+function velBandLow(rpm){
+  const r = parseFloat(rpm);
+  if(!(r > 0) || r >= 600) return 10;
+  return Math.round(Math.min(10, Math.max(2, 0.7*r/60))*10)/10;
+}
+// Canlı ölçümün hesaplandığı alt sınır (henüz ölçüm yoksa girilen devirden).
+function liveVelBandLow(){
+  const sp = axisSpectra.X || axisSpectra.Y || axisSpectra.Z;
+  if(sp && sp.velBand) return sp.velBand[0];
+  const el = document.getElementById('rpmInput');
+  return velBandLow(el ? el.value : null);
+}
 // Zarf (envelope) analizi için varsayılan demodülasyon bandı ve saklanan/gösterilen
 // üst frekans sınırı. Ölçüm kaydı sırasında (saveMeasurementToFirestore) HER ZAMAN
 // bu varsayılan bantla hesaplanıp Firestore'a küçük, downsample edilmiş bir zarf
@@ -4979,12 +5009,13 @@ function computeResults(){
   liveSavedToSummary = false;
   twfHpCache = {};
   const cls = selTag ? isoClass(selTag.kw, selTag.foundation) : null;
+  const fLow = velBandLow(document.getElementById('rpmInput').value);
   for(const ax of ['X','Y','Z']){
     const s = axisSamples[ax];
     const {freqs, psd} = computePSD(s, SAMPLE_RATE_HZ);
-    const {velAmp, rmsVelocity} = velocitySpectrumFromAccelPSD(freqs, psd, VEL_F_LOW, VEL_F_HIGH);
-    const rmsAccel = rmsAccelFromPSD(freqs, psd, VEL_F_LOW, VEL_F_HIGH);
-    axisSpectra[ax] = {freqs, psd, velAmp, rmsVelocity, rmsAccel,
+    const {velAmp, rmsVelocity} = velocitySpectrumFromAccelPSD(freqs, psd, fLow, VEL_F_HIGH);
+    const rmsAccel = rmsAccelFromPSD(freqs, psd, fLow, VEL_F_HIGH);
+    axisSpectra[ax] = {freqs, psd, velAmp, rmsVelocity, rmsAccel, velBand:[fLow, VEL_F_HIGH],
       twf: computeTwfStats(s, SAMPLE_RATE_HZ), ski: skiSlopeCheck(s, SAMPLE_RATE_HZ)};
     document.getElementById('vel'+ax).textContent = rmsVelocity.toFixed(2);
     document.getElementById('accel'+ax).textContent = rmsAccel.toFixed(3);
@@ -5605,7 +5636,20 @@ function renderTwfPanel(){
   ['BPFO','BPFI','rev','none'].forEach(k=> on('twfMark_'+k, ()=> twfMark = k));
 })();
 
-document.getElementById('rpmInput').addEventListener('input', ()=>{ if(['X','Y','Z'].some(ax=>axisSpectra[ax])){ renderAutoDiag(); renderQuickSummary(); } });
+document.getElementById('rpmInput').addEventListener('input', ()=>{
+  if(!['X','Y','Z'].some(ax=>axisSpectra[ax])) return;
+  // Devir 600 rpm sınırını geçtiyse / düşük devirde değiştiyse hız bandı da değişir → RMS yeniden hesaplanır.
+  const sp = axisSpectra.X || axisSpectra.Y || axisSpectra.Z;
+  const want = velBandLow(document.getElementById('rpmInput').value);
+  if(sp.velBand && sp.velBand[0] !== want && ['X','Y','Z'].every(ax=>axisSamples[ax] && axisSamples[ax].length)){
+    const saved = liveSavedToSummary;
+    computeResults();
+    liveSavedToSummary = saved;
+    return;
+  }
+  renderAutoDiag();
+  renderQuickSummary();
+});
 
 // Canlı ölçümden sonra tarama sonucunu kısa bir notla gösterir; teyit edilmemiş
 // her bulgu için "bu noktayı bir kez daha ölçün" der. Kayıt sonrası da çağrılır.
@@ -5679,7 +5723,7 @@ function buildIsoAnalysisHtml(ax){
     <div style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text-dim); border-top:1px solid var(--line); padding-top:8px;">
       ${ISO_CLASS_SHORT[cls]} bölge sınırları (mm/s RMS): A≤${ab} · B≤${bc} · C≤${cd} · D&gt;${cd}
     </div>
-    ${(()=>{ const n = isoLowSpeedNote(document.getElementById('rpmInput').value); return n ? `<div style="margin-top:8px; font-size:11.5px; color:var(--amber);">⚠ ${n}</div>` : ''; })()}
+    ${(()=>{ const n = isoLowSpeedNote(document.getElementById('rpmInput').value, liveVelBandLow()); return n ? `<div style="margin-top:8px; font-size:11.5px; color:var(--amber);">⚠ ${n}</div>` : ''; })()}
     <div style="margin-top:8px; font-size:10.5px; color:var(--text-dim);">${ISO_BASIS_TEXT}</div>`;
 }
 
@@ -5748,12 +5792,13 @@ function velOrderInfo(f, f1, binHzOverride, ctx){
   return { order:r, text:'Devirle ilişkisiz (rulman/elektriksel olabilir)', cls:'' };
 }
 
-// En güçlü 5 tepe (10..VEL_F_HIGH Hz). Enerji payı, pencere sızıntısı nedeniyle
+// En güçlü 5 tepe (hız bandı içinde, ..VEL_F_HIGH Hz). Enerji payı, pencere sızıntısı nedeniyle
 // tepenin ±2 komşu noktasıyla birlikte hesaplanır (Σ velAmp² = toplam RMS²).
 function velTopPeaks(freqs, velAmp, rms, count){
   const cand = [];
+  // Bandın altında velAmp zaten 0 (bant devre göre değişir); ayrıca alt sınır gerekmez.
   for(let k=1;k<freqs.length-1 && freqs[k]<=VEL_F_HIGH;k++){
-    if(freqs[k] < VEL_F_LOW) continue;
+    if(freqs[k] < VEL_F_MIN_LOW) continue;
     const v = velAmp[k];
     if(v > 0 && v >= velAmp[k-1] && v > velAmp[k+1]) cand.push(k);
   }
@@ -5942,7 +5987,7 @@ function setupVelPanel(ax){
     prevPts = pv.f.map((f,i)=>({x:f, y:pv.v[i]}));
     const ts = prevDoc.timestamp && prevDoc.timestamp.toDate ? prevDoc.timestamp.toDate() : null;
     prevLabel = 'önceki ölçüm' + (ts ? ' ('+ts.toLocaleDateString('tr-TR')+')' : '') + (prevDoc.velRMS && prevDoc.velRMS[ax]!=null ? ', '+prevDoc.velRMS[ax].toFixed(2)+' mm/s RMS' : '');
-    const ds = downsampleSpectrum(freqs, velAmp, pv.f.length, VEL_F_LOW, VEL_F_HIGH);
+    const ds = downsampleSpectrum(freqs, velAmp, pv.f.length, prevDoc.velBandLow || VEL_F_LOW, VEL_F_HIGH);
     binnedPts = ds.f.map((f,i)=>({x:f, y:ds.v[i]}));
   }
   const keepCompare = velPanelState ? velPanelState.compare : false;
@@ -6065,7 +6110,7 @@ function histRenderPeaks(){
   const pts = ds.data;
   const cand = [];
   for(let k=1;k<pts.length-1;k++){
-    if(pts[k].x < VEL_F_LOW) continue;
+    if(pts[k].x < VEL_F_MIN_LOW) continue;
     if(pts[k].y > 0 && pts[k].y >= pts[k-1].y && pts[k].y > pts[k+1].y) cand.push(k);
   }
   cand.sort((a,b)=>pts[b].y-pts[a].y);
@@ -7054,6 +7099,26 @@ function orderOverlapNotes(perKey, shaftHz, nominalHz, bFreqs){
   return out;
 }
 
+// Düşük devirde (≈2 sn kayıt, ≈0.5 Hz çözünürlük) bazı rulman çizgileri bir mil
+// harmoniğine o kadar yakın düşer ki dışlama penceresine girer ve hiç değerlendirilemez
+// (ör. 500 rpm'de 63xx BPFO ≈ 25.6 Hz, 3× devir = 25.0 Hz). O çizgide bulgu yoksa bu
+// "arıza yok" değil "bakılamadı" demektir; not bunu açıkça söyler.
+function blindLineNotes(perKey, shaftHz, mainsHz, bScaled){
+  if(!shaftHz || !bScaled) return [];
+  const blind = [];
+  ['BPFO','BPFI'].forEach(key=>{
+    const k = perKey.find(p=>p.key===key);
+    if(!k || k.level >= 2 || !(bScaled[key] > 0)) return;
+    for(let h=1; h<=PSD_ANCHOR_HARMONIC; h++){
+      const t = bScaled[key]*h;
+      const why = exclusionReason(t, shaftHz, mainsHz);
+      if(why && why.includes('devir')) blind.push(`${h===1?'':h+'×'}${key} ${t.toFixed(1)} Hz ≈ ${why}`);
+    }
+  });
+  if(!blind.length) return [];
+  return [`Çözünürlük sınırı: ${blind.join('; ')} — mil harmoniğiyle aynı pencereye düşüyor. ≈2 sn'lik ölçümde (≈0.5 Hz çözünürlük) ikisi ayrıştırılamadığı için bu çizgiler değerlendirme dışı kaldı; buradaki "bulgu yok" bu çizgiler için kesin değildir. Diğer harmoniklere, zarf spektrumuna ve trende bakın.`];
+}
+
 // ctx: { rpm, shaftHz (ölçülen mil frekansı, opsiyonel), zone ('A'-'D'), worsening (bool) }
 function analyzeBearing(psdF, psdV, envPts, bFreqs, ctx){
   if(!bFreqs) return null;
@@ -7155,6 +7220,7 @@ function analyzeBearing(psdF, psdV, envPts, bFreqs, ctx){
     notes.push(`Spektrumdaki şebeke harmonikleri ${mainsHz.toFixed(1)} Hz tabanlı görünüyor (50 Hz'e göre %${((1-mainsHz/MAINS_HZ)*100).toFixed(1)} kayma) — şebeke sapması veya sensör örnekleme saati farkı olabilir; şebeke tepeleri bu değere göre dışlandı.`);
   }
   orderOverlapNotes(perKey, shaftHz, nominalHz, bFreqs).forEach(t=> notes.unshift(t));
+  blindLineNotes(perKey, shaftHz, mainsHz, bScaled).forEach(t=> notes.push(t));
   if(level >= 2 && level < 4 && top.psd.length && top.env.length && !(zoneHigh || ctx.worsening)){
     notes.push('Seviye 4 için ayrıca ISO bölgesi C/D veya önceki ölçüme göre kötüleşme gerekir; şu an ikisi de yok.');
   }
@@ -7756,7 +7822,7 @@ function buildIsoSectionData(meta){
   }
   const boundariesTxt = cls ? (()=>{
     const [ab,bc,cd] = ISO_ZONES[cls];
-    const low = isoLowSpeedNote(meta.rpm);
+    const low = isoLowSpeedNote(meta.rpm, meta.velBandLow);
     return `${ISO_CLASS_LABELS[cls]} — Bölge sınırları (mm/s RMS): A≤${ab} · B≤${bc} · C≤${cd} · D>${cd}<br>${ISO_BASIS_TEXT}` + (low ? `<br>⚠ ${low}` : '');
   })() : 'Bu tag için motor gücü (kW) tanımlanmadığından ISO sınıfı belirlenemedi.';
   return { rowsHtml, boundariesTxt };
@@ -7897,6 +7963,7 @@ function gatherReportContext(){
     const liveRpm = parseFloat(document.getElementById('rpmInput').value) || null;
     meta = {
       rpm: document.getElementById('rpmInput').value || '—',
+      velBandLow: liveVelBandLow(),
       shaftHz: liveShaftHz(liveRpm),
       rms: { X: axisSpectra.X ? axisSpectra.X.rmsVelocity : null,
              Y: axisSpectra.Y ? axisSpectra.Y.rmsVelocity : null,
@@ -7910,6 +7977,7 @@ function gatherReportContext(){
     const dateTxt = doc.timestamp && doc.timestamp.toDate ? doc.timestamp.toDate().toLocaleString('tr-TR') : '—';
     meta = {
       rpm: doc.rpm || '—',
+      velBandLow: doc.velBandLow || VEL_F_LOW,
       shaftHz: doc.shaftHz || null,
       rms: doc.velRMS || {},
       sourceNote: `⚠ Bu rapor bu oturumda alınmış canlı bir ölçüme değil, kayıtlı en güncel ölçüme aittir (${dateTxt}). Güncel bir rapor için önce yeni bir ölçüm alın.`

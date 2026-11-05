@@ -23,10 +23,10 @@ for(const file of APP_FILES){
   const api = load(file, {
     // assessSignalQuality global axisSamples'ı okur; testten doldurabilmek için erişimci.
     prelude: 'var SAMPLE_RATE_HZ = 6510; var SCALE_G_PER_LSB = 0.0006104; var axisSamples = {}; function getAxisSamples(){ return axisSamples; }',
-    exports: ['getAxisSamples', 'shaftFaultBreakdown', 'estimateMainsBase', 'estimateDriveFe', 'validDriveFe', 'normalizePsdForAnalysis', 'nearBearingFreq', 'bearingFaultIndex', 'axisRoleOf', 'axialMisalignmentCheck', 'bfiSummaryOf', 'evaluateBfiTrend'],
+    exports: ['getAxisSamples', 'shaftFaultBreakdown', 'estimateMainsBase', 'estimateDriveFe', 'validDriveFe', 'normalizePsdForAnalysis', 'nearBearingFreq', 'bearingFaultIndex', 'axisRoleOf', 'axialMisalignmentCheck', 'bfiSummaryOf', 'evaluateBfiTrend', 'blindLineNotes'],
     names: ['parseSensorSampleRate', 'nextPow2', 'fft', 'ifft', 'computePSD', 'envelopeSpectrum',
       'velocitySpectrumFromAccelPSD', 'rmsAccelFromPSD', 'downsampleSpectrum',
-      'ISO_ZONES', 'isoClass', 'isoEvaluate', 'ISO_BASIS_TEXT', 'isoLowSpeedNote',
+      'ISO_ZONES', 'isoClass', 'isoEvaluate', 'ISO_BASIS_TEXT', 'isoLowSpeedNote', 'velBandLow',
       'escapeHtml', 'findSeqGaps', 'ENV_SPEC_F_MAX',
       'Q_CLIP_LSB', 'Q_CLIP_MIN_COUNT', 'Q_FLAT_STD_LSB', 'Q_STUCK_RUN', 'Q_SPIKE_LSB', 'Q_LEN_MISMATCH',
       'SKI_BLOCK_S', 'SKI_DRIFT_RATIO', 'SKI_DRIFT_MIN_G', 'SKI_BAND', 'SKI_VEL_RATIO', 'SKI_VEL_MIN', 'skiSlopeCheck',
@@ -106,6 +106,44 @@ for(const file of APP_FILES){
     assert.equal(api.isoLowSpeedNote('1449'), '');
     assert.equal(api.isoLowSpeedNote('—'), '');
     assert.match(api.ISO_BASIS_TEXT, /10816-3/);
+  });
+
+  test(`${file}: 600 rpm altında hız bandı devre göre iniyor, 1× bandın içinde`, () => {
+    assert.equal(api.velBandLow('1490'), 10);
+    assert.equal(api.velBandLow('600'), 10);
+    assert.equal(api.velBandLow('—'), 10);
+    assert.equal(api.velBandLow('500'), 5.8);   // 0.7 × 8.33 Hz
+    assert.equal(api.velBandLow('100'), 2);     // alt sınır 2 Hz
+    // 500 rpm'de 1× (8.33 Hz) hız RMS'ine eski bantta girmiyor, yeni bantta giriyor.
+    const f1 = 500 / 60, a = 0.05;
+    const { freqs, psd } = api.computePSD(signal(sine(f1, a)), FS);
+    const old = api.velocitySpectrumFromAccelPSD(freqs, psd, 10, 1000).rmsVelocity;
+    const neu = api.velocitySpectrumFromAccelPSD(freqs, psd, api.velBandLow('500'), 1000).rmsVelocity;
+    const expected = a * G / (2 * Math.PI * f1) / Math.SQRT2 * 1000;
+    assert.ok(old < 0.2 * expected, `eski bant ${old.toFixed(2)} mm/s`);
+    assert.ok(Math.abs(neu / expected - 1) < 0.05, `yeni bant ${neu.toFixed(2)}, beklenen ${expected.toFixed(2)}`);
+    assert.match(api.isoLowSpeedNote('500', 5.8), /5\.8–1000 Hz/);
+    assert.match(api.isoLowSpeedNote('500'), /10–1000 Hz/);
+  });
+
+  test(`${file}: yerçekimi (DC) düşük devir bandında hız RMS'ini şişirmiyor`, () => {
+    const g = rng(91);
+    const x = signal((t) => 1 + 0.002 * g());   // 1 g sabit + küçük gürültü
+    const { freqs, psd } = api.computePSD(x, FS);
+    const { rmsVelocity } = api.velocitySpectrumFromAccelPSD(freqs, psd, 2, 1000);
+    assert.ok(rmsVelocity < 0.3, `${rmsVelocity.toFixed(3)} mm/s`);
+  });
+
+  test(`${file}: 500 rpm'de 3× ile çakışan BPFO için çözünürlük notu`, () => {
+    const lvl1 = [{ key: 'BPFO', level: 1 }, { key: 'BPFI', level: 1 }];
+    const low = 500 / 60;   // 6313: BPFO 3.0708× = 25.6 Hz, 3× = 25.0 Hz
+    const nLow = api.blindLineNotes(lvl1, low, 50, { BPFO: 3.0708 * low, BPFI: 4.9292 * low });
+    assert.equal(nLow.length, 1);
+    assert.match(nLow[0], /BPFO 25\.6 Hz/);
+    const high = 1490 / 60;
+    assert.equal(api.blindLineNotes(lvl1, high, 50, { BPFO: 3.0708 * high, BPFI: 4.9292 * high }).length, 0);
+    // Bulgu varsa (Seviye 2+) bu not yerine orderOverlapNotes devreye girer.
+    assert.equal(api.blindLineNotes([{ key: 'BPFO', level: 2 }], low, 50, { BPFO: 3.0708 * low }).length, 0);
   });
 
   test(`${file}: HTML kaçışı`, () => {

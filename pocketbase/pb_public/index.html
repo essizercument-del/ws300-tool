@@ -8009,6 +8009,114 @@ function buildDiagPrintHtml(meta){
     ${!d.orient ? '<div style="font-size:11px; color:#888; margin-top:4px;">Sensör yönü (eksenel/dikey) bu nokta için tanımlanmamış.</div>' : ''}`;
 }
 
+// ============================================================
+// RAPOR — SON 3 ÖLÇÜM KARŞILAŞTIRMASI
+// Rapor tek ölçümü (canlı ya da en güncel kayıt) ayrıntılı anlatır; bu bölüm aynı
+// noktanın son 3 ölçümünü yan yana koyar: tarih, devir, eksen başına mm/s ve ISO
+// bölgesi, crest factor (1–3 kHz), rulman skoru; ayrıca eksen başına 3 ölçümün hız
+// spektrumu üst üste. Canlı ölçüm henüz kaydedilmediyse "şimdi" olarak listeye girer.
+// ============================================================
+const RECENT_REPORT_COUNT = 3;
+const RECENT_COLORS = ['#b0b0b0', '#2980b9', '#c0392b']; // eski → yeni
+function recentReportEntries(){
+  const docs = (trendDocsData || []).slice();
+  const code = bearingCodeForPoint();
+  const cls = selTag ? isoClass(selTag.kw, selTag.foundation) : null;
+  const list = docs.map(m=>({
+    ts: m.timestamp && m.timestamp.toDate ? m.timestamp.toDate() : null,
+    rpm: m.rpm || null,
+    vel: m.velRMS || {},
+    spec: m.velSpectrum || {},
+    cf: Object.fromEntries(['X','Y','Z'].map(ax=>[ax, m.twf && m.twf[ax] && m.twf[ax].hp ? m.twf[ax].hp.cf : null])),
+    bfi: code ? (()=>{ try{ const b = bfiForDoc(m, code); return Math.max(0, ...['X','Y','Z'].map(ax=> b[ax] ? bfiMax(b[ax]) || 0 : 0)); }catch(e){ return null; } })() : null,
+    live: false
+  }));
+  const hasLive = !!(axisSpectra.X || axisSpectra.Y || axisSpectra.Z);
+  if(hasLive && !liveSavedToSummary){
+    let bfi = null;
+    try{ const ad = liveAutoDiag(); if(ad && ad.bfi) bfi = Math.max(0, ...['X','Y','Z'].map(ax=> ad.bfi[ax] ? bfiMax(ad.bfi[ax].scores) || 0 : 0)); }catch(e){}
+    const spec = {};
+    ['X','Y','Z'].forEach(ax=>{ const sp = axisSpectra[ax]; if(sp) spec[ax] = downsampleSpectrum(sp.freqs, sp.velLine, 300, sp.velBand ? sp.velBand[0] : VEL_F_LOW, VEL_F_HIGH, 'max'); });
+    list.push({ ts: new Date(), rpm: parseFloat(document.getElementById('rpmInput').value) || null,
+      vel: Object.fromEntries(['X','Y','Z'].map(ax=>[ax, axisSpectra[ax] ? axisSpectra[ax].rmsVelocity : null])),
+      spec, cf: Object.fromEntries(['X','Y','Z'].map(ax=>[ax, axisSpectra[ax] && axisSpectra[ax].twf && axisSpectra[ax].twf.hp ? axisSpectra[ax].twf.hp.cf : null])),
+      bfi, live: true });
+  }
+  const out = list.slice(-RECENT_REPORT_COUNT);
+  out.forEach(e=>{ e.zone = Object.fromEntries(['X','Y','Z'].map(ax=>[ax, e.vel[ax] != null ? (isoEvaluate(e.vel[ax], cls) || null) : null])); });
+  return out;
+}
+function recentLabel(e){
+  if(!e.ts) return '—';
+  return e.ts.toLocaleDateString('tr-TR', {day:'2-digit', month:'2-digit', year:'2-digit'}) + ' ' + e.ts.toLocaleTimeString('tr-TR', {hour:'2-digit', minute:'2-digit'}) + (e.live ? ' (bu ölçüm)' : '');
+}
+function buildRecentOverlayImage(ax, entries){
+  const ds = entries.map((e,i)=>{
+    const s = e.spec && e.spec[ax];
+    if(!s || !s.f || !s.f.length) return null;
+    const off = RECENT_COLORS.length - entries.length;
+    return { label: recentLabel(e), data: s.f.map((f,j)=>({x:f, y:s.v[j]})), borderColor: RECENT_COLORS[i + off], borderWidth: i === entries.length-1 ? 1.6 : 1.1, pointRadius:0, tension:0 };
+  }).filter(Boolean);
+  if(ds.length < 2) return Promise.resolve(null);
+  return new Promise((resolve)=>{
+    const canvas = document.createElement('canvas');
+    canvas.width = 900; canvas.height = 280;
+    const chart = new Chart(canvas, {
+      type:'line', data:{ datasets: ds },
+      options:{ responsive:false, maintainAspectRatio:false, animation:false,
+        scales:{ x:{ type:'linear', min:0, max:VEL_F_HIGH, title:{display:true, text:'Hz', color:'#333'}, ticks:{color:'#333'}, grid:{color:'#ddd'} },
+                 y:{ min:0, title:{display:true, text:'mm/s', color:'#333'}, ticks:{color:'#333'}, grid:{color:'#ddd'} } },
+        plugins:{ legend:{ labels:{ color:'#333', boxWidth:14 } } } }
+    });
+    requestAnimationFrame(()=> requestAnimationFrame(()=>{ const img = chart.toBase64Image('image/png', 1); chart.destroy(); resolve(img); }));
+  });
+}
+// Eksen başına kısa değişim yorumu: "X: 2.10 → 3.40 → 4.30 mm/s (+%27 son ölçümde)"
+function recentTrendText(ax, entries){
+  const v = entries.map(e=>e.vel[ax]).filter(x=>x != null);
+  if(v.length < 2) return '';
+  const last = v[v.length-1], prev = v[v.length-2];
+  const pct = prev > 0 ? (last-prev)/prev*100 : 0;
+  const z = entries.map(e=>e.zone[ax] ? e.zone[ax].zone : null).filter(Boolean);
+  const zoneChange = z.length >= 2 && z[z.length-1] !== z[z.length-2] ? ` — bölge ${z[z.length-2]} → ${z[z.length-1]}` : '';
+  const dir = Math.abs(pct) < 10 ? 'yaklaşık aynı' : (pct > 0 ? `+%${pct.toFixed(0)} arttı` : `%${Math.abs(pct).toFixed(0)} azaldı`);
+  return `${ax}: ${v.map(x=>x.toFixed(2)).join(' → ')} mm/s (son ölçümde ${dir}${zoneChange})`;
+}
+async function buildRecentComparisonHtml(){
+  const entries = recentReportEntries();
+  if(entries.length < 2) return `<h2 style="font-size:15px; margin:20px 0 8px;">Son Ölçümler</h2><div style="font-size:12px; color:#777;">Bu nokta için karşılaştırılacak önceki ölçüm yok.</div>`;
+  const td = 'padding:6px; border:1px solid #ccc; font-size:12px;';
+  const velCell = (e, ax)=>{
+    const v = e.vel[ax], z = e.zone[ax];
+    if(v == null) return `<td style="${td}">—</td>`;
+    return `<td style="${td}"><b style="color:${z ? z.color : '#333'}">${v.toFixed(2)}</b>${z ? ` <span style="font-size:10.5px; color:${z.color}">${z.zone}</span>` : ''}</td>`;
+  };
+  const cfTxt = (e)=> ['X','Y','Z'].map(ax=> e.cf[ax] != null ? e.cf[ax].toFixed(1) : '—').join(' / ');
+  const rows = entries.slice().reverse().map(e=>`<tr${e.live ? ' style="background:#fff8e6;"' : ''}>
+      <td style="${td}">${recentLabel(e)}</td><td style="${td}">${e.rpm || '—'}</td>
+      ${velCell(e,'X')}${velCell(e,'Y')}${velCell(e,'Z')}
+      <td style="${td}">${cfTxt(e)}</td><td style="${td}">${e.bfi != null ? e.bfi.toFixed(0) + '%' : '—'}</td></tr>`).join('');
+  let charts = '';
+  for(const ax of ['X','Y','Z']){
+    const img = await buildRecentOverlayImage(ax, entries);
+    const txt = recentTrendText(ax, entries);
+    if(!img && !txt) continue;
+    charts += `<div style="margin-top:12px; page-break-inside:avoid;">
+      <h3 style="font-size:13px; margin:8px 0 4px;">${ax} Ekseni — Hız Spektrumu, son ${entries.length} ölçüm üst üste</h3>
+      ${txt ? `<div style="font-size:12px; margin-bottom:4px;">${txt}</div>` : ''}
+      ${img ? `<img src="${img}" style="width:100%; max-width:700px; border:1px solid #ddd; border-radius:4px;">` : ''}
+    </div>`;
+  }
+  return `<h2 style="font-size:15px; margin:20px 0 8px;">Son ${entries.length} Ölçüm Karşılaştırması</h2>
+    <div style="font-size:11.5px; color:#555; margin-bottom:6px;">Aynı noktanın son ölçümleri, en yenisi üstte. Renkli değerler ISO 10816-3 bölgesidir. Crest factor rulman darbe bandından (1–3 kHz) X / Y / Z sırasıyla; rulman skoru üç eksenin en yükseğidir.</div>
+    <table style="width:100%; border-collapse:collapse;">
+      <tr style="background:#eee;"><th style="${td} text-align:left;">Tarih</th><th style="${td} text-align:left;">RPM</th><th style="${td} text-align:left;">X mm/s</th><th style="${td} text-align:left;">Y mm/s</th><th style="${td} text-align:left;">Z mm/s</th><th style="${td} text-align:left;">Crest F. X/Y/Z</th><th style="${td} text-align:left;">Rulman skoru</th></tr>
+      ${rows}
+    </table>
+    ${charts}
+    <div style="font-size:10.5px; color:#888; margin-top:6px;">Grafiklerde gri en eski, mavi bir önceki, kırmızı en yeni ölçümdür. Aynı frekanstaki bir tepenin ölçümden ölçüme büyümesi, o tepeye karşılık gelen arızanın ilerlediğini gösterir.</div>`;
+}
+
 function buildPrintReportHtml(chartImages, meta, bearing){
   const now = new Date();
   const stamp = now.toLocaleString('tr-TR');
@@ -8059,6 +8167,8 @@ function buildPrintReportHtml(chartImages, meta, bearing){
     </table>
 
     ${buildDiagPrintHtml(meta)}
+
+    ${meta.recentHtml || ''}
 
     ${bearing && bearing.code ? `
     <h2 style="font-size:15px; margin:20px 0 8px;">Rulman Arıza Frekansları</h2>
@@ -8155,6 +8265,7 @@ async function printReport(){
   btn.textContent = 'Grafikler hazırlanıyor…';
   try{
     const chartImages = await buildReportChartImages(getSpec, getEnvSpec, bearing.freqs, reportCtxFor(meta, bearing), bearing.markerFreqs);
+    meta.recentHtml = await buildRecentComparisonHtml();
     document.getElementById('printReport').innerHTML = buildPrintReportHtml(chartImages, meta, bearing);
     window.print();
   } finally {
@@ -8201,6 +8312,7 @@ async function exportHtmlReport(){
   btn.textContent = 'Hazırlanıyor…';
   try{
     const axesData = {};
+    meta.recentHtml = await buildRecentComparisonHtml();
     for(const ax of ['X','Y','Z']){
       const spec = getSpec(ax);
       if(!spec) continue;
@@ -8345,6 +8457,7 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
   </table>
   ${buildDiagPrintHtml(meta)}
 
+  ${meta.recentHtml || ''}
 
   <h2 style="font-size:15px; margin:20px 0 4px;">Spektrum Grafikleri</h2>
 

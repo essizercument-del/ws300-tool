@@ -4983,6 +4983,12 @@ function sidebandSummary(sb){
   const hit = (arr)=> arr.some(e=> e.r && e.r.center && e.r.ones >= 1);
   return { bpfi: hit(sb.BPFI), bsf: hit(sb.BSF) };
 }
+function buildCarpetHtml(ax){
+  const c = liveCarpet(ax);
+  if(!c) return '<div style="margin-top:8px; color:var(--text-dim)">Halı tipi taban yükselmesi yok (1–3 kHz tabanı normal).</div>';
+  const st = estimateStage(ax);
+  return `<div style="margin-top:10px; font-weight:600; color:var(--amber)">Halı tipi taban — yağ filmi yok/yetersiz</div>` + bulletList(carpetBullets(c, st && st.defectEvidence));
+}
 function buildSidebandHtml(ax){
   const sb = liveSidebands(ax);
   if(!sb) return '<div style="color:var(--text-dim)">Yan bant kontrolü için rulman kodu ve RPM gerekli.</div>';
@@ -5036,6 +5042,57 @@ function hpRmsBaseline(ax){
   if(!docs.length) return null;
   return medianOf(docs.slice(0, 3).map(d=>d.twf[ax].hp.rms));
 }
+// ============================================================
+// HALI TİPİ TABAN (geniş bantlı yükselme) — YAĞ FİLMİ / YAĞLAMA
+// Tekil, rastgele sivri tepeler ("çim") tek ölçümlük PSD'nin doğal istatistiğidir.
+// "Halı" ise farklıdır: 1–3 kHz bölgesinde TABANIN TAMAMI yükselir, belirgin
+// arıza tepesi ve darbe olmadan. Bu, bilye ile bilezik arasındaki yağ filminin
+// kalmadığını (metal-metal sürtünme) gösterir; yağlanınca düşer. Yağlamaya rağmen
+// düşmüyorsa ya da arıza frekansları/yan bantlarla birlikteyse ileri evre aşınmadır.
+// İki ölçüt (biri yeter):
+//  - trend: 1–3 kHz RMS bu noktanın ilk ölçümlerine göre ≥ CARPET_TREND katı (güçlü)
+//  - şekil: 1–3 kHz PSD medyanı 300–800 Hz medyanının ≥ CARPET_SHAPE katı ve
+//           sensör gürültüsünün belirgin üstünde (tek ölçümde, "olası")
+// ============================================================
+const CARPET_TREND = 2;
+const CARPET_SHAPE = 2;
+const CARPET_MIN_PSD = 1e-7;    // g²/Hz (≈0.3 mg/√Hz) — bunun altı sensör gürültüsü sayılır
+function bandMedian(freqs, psd, lo, hi){
+  const v = [];
+  for(let k=0;k<freqs.length;k++){ const f = freqs[k]; if(f >= lo && f <= hi && psd[k] > 0) v.push(psd[k]); }
+  return v.length ? medianOf(v) : null;
+}
+// freqs/psd: tam çözünürlüklü PSD (ya da null); ratio: 1–3 kHz RMS / ilk ölçümler (ya da null)
+function carpetCheck(freqs, psd, fs, ratio){
+  let hf = null, mf = null, shape = null;
+  if(freqs && psd){
+    hf = bandMedian(freqs, psd, 1000, Math.min(3000, fs/2*0.95));
+    mf = bandMedian(freqs, psd, 300, 800);
+    shape = (hf && mf) ? hf/mf : null;
+  }
+  const byTrend = ratio != null && ratio >= CARPET_TREND;
+  const byShape = shape != null && shape >= CARPET_SHAPE && hf >= CARPET_MIN_PSD;
+  if(!byTrend && !byShape) return null;
+  return { byTrend, byShape, ratio, shape, hfDensity: hf != null ? Math.sqrt(hf)*1000 : null }; // mg/√Hz
+}
+// Canlı eksen için (rapor ve tanı ekranları).
+function liveCarpet(ax){
+  const sp = axisSpectra[ax];
+  if(!sp) return null;
+  const h = sp.twf && sp.twf.hp;
+  const base = hpRmsBaseline(ax);
+  return carpetCheck(sp.freqs, sp.psd, SAMPLE_RATE_HZ, (h && base) ? h.rms/base : null);
+}
+function carpetBullets(c, withDefect){
+  const b = [];
+  if(c.byTrend) b.push(`1–3 kHz bandındaki titreşim tabanı bu noktanın ilk ölçümlerine göre ${c.ratio.toFixed(1)} kat yükselmiş.`);
+  if(c.byShape) b.push(`1–3 kHz PSD tabanı (${c.hfDensity.toFixed(2)} mg/√Hz) 300–800 Hz tabanının ${c.shape.toFixed(1)} katı — yüksek frekansta geniş bir "halı".`);
+  b.push('Anlamı: bilye ile bilezik arasındaki yağ filmi kalmamış ya da yetersiz (metal-metal sürtünme). Tekil sivri tepelerden ("çim") farklı olarak tabanın tamamı yükselir.');
+  if(withDefect) b.push('<b>Arıza frekansları/darbe bulgusuyla birlikte görüldüğü için ileri evre aşınma olasılığı yüksek.</b>');
+  b.push('Yapılacak: rulmanı yağlayıp aynı noktadan tekrar ölçün. Taban düşerse sorun yağlamaydı; düşmüyorsa ya da kısa sürede geri yükseliyorsa yüzey aşınması ilerlemiştir (ileri evre).');
+  return b;
+}
+
 const STAGE_LABELS = { 1:'Stage 1 / sağlam görünüyor', 2:'Stage 2 — erken hasar', 3:'Stage 3 — belirgin hasar', 4:'Stage 4 — ileri hasar' };
 const STAGE_ACTIONS = {
   1:'Rutin izlemeye devam.',
@@ -5071,15 +5128,21 @@ function estimateStage(ax){
   if(sb && sb.bsf) r.push('BSF tepesinde ±FTF yan bantları.');
   if(ftfSub) r.push('Kafes (FTF) frekansında tepe.');
   if(zoneHigh) r.push(`Genel hız Zone ${zone}.`);
+  const carpet = liveCarpet(ax);
+  const defectEvidence = !!(psdHit.length || envHit.length || twfL >= 1 || ftfSub || (sb && (sb.bpfi || sb.bsf)));
+  if(carpet) r.push('Yüksek frekansta halı tipi taban yükselmesi (yağ filmi yok/yetersiz).');
   let stage = 1;
-  if((tr && tr.kind === 'falling') || (zoneHigh && ratio >= 3 && h && h.cf < CF_WARN && (envHit.length || psdHit.length || ftfSub)) || (ftfSub && psdHit.length)) stage = 4;
+  if((tr && tr.kind === 'falling') || (zoneHigh && ratio >= 3 && h && h.cf < CF_WARN && (envHit.length || psdHit.length || ftfSub)) || (ftfSub && psdHit.length) || (carpet && defectEvidence && (psdHit.length || zoneHigh))) stage = 4;
   else if(psdHit.length && (envHit.length || twfL >= 1 || (sb && (sb.bpfi || sb.bsf)) || (res && res.level >= 3))) stage = 3;
-  else if(envHit.length || psdHit.length || twfL >= 1 || (tr && tr.kind === 'rising') || (ratio != null && ratio >= 1.5)) stage = 2;
+  else if(envHit.length || psdHit.length || twfL >= 1 || (tr && tr.kind === 'rising') || (ratio != null && ratio >= 1.5) || carpet) stage = 2;
   const caveats = [];
   if(!res) caveats.push(x.rpm ? 'Rulman kodu girilmemiş/tabloda yok: yalnızca zaman dalgası ve trende göre tahmin edildi.' : 'RPM girilmemiş: yalnızca zaman dalgasına göre tahmin edildi.');
   if(base == null) caveats.push('Karşılaştırılacak eski ölçüm yok: taban yükselmesi ve CF trendi değerlendirilemedi.');
   if(stage === 1) caveats.push('Stage 1 yalnızca 20–60 kHz ultrasonik bölgede görülür; WS300 bu aralığı ölçemez, bu yüzden "sağlam" ile "Stage 1" ayırt edilemez.');
-  return { stage, label: STAGE_LABELS[stage], action: STAGE_ACTIONS[stage], reasons: r, caveats };
+  let action = STAGE_ACTIONS[stage];
+  // Halı var ama arıza kanıtı yok: önce yağlama — ileri evreye ancak yağlamadan sonra karar verilir.
+  if(carpet && !defectEvidence && stage <= 2) action = 'Önce rulmanı yağlayıp tekrar ölçün: taban düşerse sorun yağlamaydı; düşmüyorsa ileri evre aşınmadır.';
+  return { stage, label: STAGE_LABELS[stage] + (carpet && !defectEvidence && stage <= 2 ? ' / yağlama yetersiz' : ''), action, reasons: r, caveats, carpet, defectEvidence };
 }
 
 // Eksen başına bulgular: [{level 0|1|2, title, text}]
@@ -5096,6 +5159,10 @@ function extraFindings(ax){
   }
   if(x.ski){
     out.push({ level:2, title:'Ski-slope / oturma geçişi', text: 'Hız spektrumu düşük frekansta yüksekten başlıyor ya da sinyalde yavaş kayma var: sensör yüzeye çarparak takılmış veya tam oturmadan ölçülmüş. Bu ölçümün hız ve crest factor değerleri güvenilmez — sensörü yerinde bırakıp birkaç saniye bekleyin ve tekrar ölçün.' });
+  }
+  if(st && st.carpet){
+    out.push({ level: st.defectEvidence ? 2 : 1, title:'Halı tipi taban — yağ filmi yok/yetersiz', short: st.defectEvidence ? 'Halı tipi taban + arıza bulgusu (ileri evre)' : 'Halı tipi taban: yağlama yetersiz olabilir',
+      text: bulletList(carpetBullets(st.carpet, st.defectEvidence)) });
   }
   if(x.twfV && x.ski){
     out.push({ level:0, title:'Zaman dalgası — crest factor / kurtosis', text:'Oturma geçişi olan ölçümde crest factor/kurtosis yorumlanmadı — ölçümü tekrarlayın.' });
@@ -5937,7 +6004,7 @@ function showDetail(ax){
   document.getElementById('bearingAnalysisText').innerHTML = buildBearingAnalysisHtml(bearingCode, rpmVal, bFreqs, liveShaft);
   const anaCtx = bearingCtx(ax, rpmVal, liveShaft, axisSpectra[ax].rmsVelocity);
   document.getElementById('psdAnalysisText').innerHTML = buildPsdAnalysisHtml(freqs, psd, bFreqs, anaCtx);
-  document.getElementById('sidebandText').innerHTML = buildSidebandHtml(ax);
+  document.getElementById('sidebandText').innerHTML = buildSidebandHtml(ax) + buildCarpetHtml(ax);
 
   // Zarf (envelope) spektrumu — 1x/2x/3x harmonik çizgileri, PSD panelindeki
   // aynı kutucuklarla (bearingMarkerVisible) açılıp kapanır, ayrı bir kutucuk
@@ -7401,6 +7468,7 @@ function buildTwfPrintHtml(ax){
       ${row('Ham (tüm bant)', st.raw)}${row('Rulman darbe bandı (1–3 kHz)', st.hp)}
     </table>
     ${v ? `<div style="font-size:12px; margin-top:5px;">${v.text}</div>` : ''}
+    ${hasLive && liveCarpet(ax) ? `<div style="font-size:12px; margin-top:5px; padding:6px 8px; border:1px solid #e0a000; border-radius:4px; background:#fff8e6;"><b>Halı tipi taban — yağ filmi yok/yetersiz.</b><ul style="margin:4px 0 0; padding-left:18px;">${carpetBullets(liveCarpet(ax), stg && stg.defectEvidence).map(t=>'<li>'+t+'</li>').join('')}</ul></div>` : ''}
     ${stg && stg.stage ? `<div style="font-size:12px; margin-top:5px; padding:6px 8px; border:1px solid #ccc; border-radius:4px;"><b>Tahmini rulman evresi: ${stg.label}.</b> ${stg.reasons.join(' ')} <b>${stg.action}</b>${stg.caveats.length ? '<br><span style="color:#777; font-size:11px;">' + stg.caveats.join(' ') + '</span>' : ''}</div>` : ''}
     <div style="font-size:10.5px; color:#888; margin-top:4px;">Crest factor = +PK / RMS. Rulman darbe bandında (1–3 kHz; mil kaynaklı titreşimler dışarıda kalır) sağlam rulmanda CF ≈ 3.5–4.5, kurtosis ≈ 3; darbe başlayınca CF 5–6 üstü. İleri evrede RMS artar ve CF yeniden düşer — trendle birlikte okunmalıdır.</div>
   </div>`;
@@ -7619,7 +7687,7 @@ function buildPrintReportHtml(chartImages, meta, bearing){
 
     <h2 style="font-size:15px; margin:20px 0 4px;">Spektrum Grafikleri</h2>
     <div style="font-size:11.5px; color:#555; background:#f7f7f7; border:1px solid #e2e2e2; border-radius:6px; padding:8px 10px; margin-bottom:10px; line-height:1.5;">
-      <b>İvme PSD grafiklerinin okunması:</b> Bu grafikler tek bir ölçümden alınan ham (istatistiksel olarak yumuşatılmamış) frekans spektrumudur — geniş banttaki çok sayıda küçük "halı" tipi tepe normaldir ve tek başına rulman arızası anlamına gelmez. Karar, rulman arıza frekanslarının (ve harmoniklerinin) ölçümde gerçekten bir tepe olarak görünüp görünmediğine bakılarak verilir; 50 Hz şebeke ve devir harmoniklerine denk gelen tepeler rulman bulgusu sayılmaz. Aynı arıza hem PSD'de hem Zarf'ta görünüyorsa bulgu çok daha güvenilirdir. Nihai sonuç "Genel Değerlendirme" bölümündeki Seviye (1–4) ve gerekçelerdir.
+      <b>İvme PSD grafiklerinin okunması:</b> Bu grafikler tek bir ölçümden alınan ham (istatistiksel olarak yumuşatılmamış) frekans spektrumudur. <b>Tekil, rastgele sivri tepeler ("çim") normaldir</b> ve tek başına arıza anlamına gelmez. <b>"Halı" ise farklıdır:</b> yüksek frekansta (≈1–3 kHz) tabanın tamamı geniş bir bölgede yükseliyorsa bu, rulmanda yağ filminin kalmadığını (yetersiz yağlama, metal-metal sürtünme) gösterir; yağlamaya rağmen düşmüyorsa ya da arıza frekanslarıyla birlikteyse ileri evre aşınmadır — böyle bir durum eksen bölümlerinde ayrıca belirtilir. Karar, rulman arıza frekanslarının (ve harmoniklerinin) ölçümde gerçekten bir tepe olarak görünüp görünmediğine bakılarak verilir; 50 Hz şebeke ve devir harmoniklerine denk gelen tepeler rulman bulgusu sayılmaz. Aynı arıza hem PSD'de hem Zarf'ta görünüyorsa bulgu çok daha güvenilirdir. Nihai sonuç "Genel Değerlendirme" bölümündeki Seviye (1–4) ve gerekçelerdir.
     </div>
     ${chartsHtml}
 
@@ -7838,7 +7906,7 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
       ${bearingSectionHtml}
       <h3 style="font-size:13px; margin:16px 0 6px;">İvme PSD (G²/Hz)</h3>
       <div style="font-size:11.5px; color:#555; background:#f7f7f7; border:1px solid #e2e2e2; border-radius:6px; padding:8px 10px; margin:4px 0 8px; line-height:1.5;">
-    <b>İvme PSD grafiklerinin okunması:</b> Geniş banttaki çok sayıda küçük "halı" tipi tepe normaldir, tek başına arıza anlamına gelmez. Karar, rulman arıza frekansları ve harmoniklerinin ölçümde gerçekten tepe olarak görünüp görünmediğine bakılarak verilir (50 Hz şebeke ve devir harmonikleri sayılmaz); aynı arıza PSD ve Zarf'ta birlikte görünürse bulgu güçlenir. Nihai sonuç "Genel Değerlendirme"deki Seviye (1–4) ve gerekçelerdir.
+    <b>İvme PSD grafiklerinin okunması:</b> Tekil, rastgele sivri tepeler ("çim") normaldir, tek başına arıza anlamına gelmez. Yüksek frekansta (≈1–3 kHz) tabanın tamamı geniş bir bölgede yükselmişse ("halı") bu, yağ filminin kalmadığını (yetersiz yağlama) gösterir; yağlamaya rağmen sürüyorsa ya da arıza frekanslarıyla birlikteyse ileri evre aşınmadır. Karar, rulman arıza frekansları ve harmoniklerinin ölçümde gerçekten tepe olarak görünüp görünmediğine bakılarak verilir (50 Hz şebeke ve devir harmonikleri sayılmaz); aynı arıza PSD ve Zarf'ta birlikte görünürse bulgu güçlenir. Nihai sonuç "Genel Değerlendirme"deki Seviye (1–4) ve gerekçelerdir.
   </div>
       <div class="rv-top bm-chips" data-kind="psd"></div>
       ${zoomToolbar(ax,'psd')}

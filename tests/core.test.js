@@ -31,7 +31,7 @@ for(const file of APP_FILES){
       'Q_CLIP_LSB', 'Q_CLIP_MIN_COUNT', 'Q_FLAT_STD_LSB', 'Q_STUCK_RUN', 'Q_SPIKE_LSB', 'Q_LEN_MISMATCH',
       'SKI_BLOCK_S', 'SKI_DRIFT_RATIO', 'SKI_DRIFT_MIN_G', 'SKI_BAND', 'SKI_VEL_RATIO', 'SKI_VEL_MIN', 'skiSlopeCheck',
       'TWF_HP_HZ', 'TWF_EDGE_FRAC', 'TWF_MIN_RMS_G', 'CF_WARN', 'CF_HIGH', 'KURT_WARN', 'KURT_HIGH', 'biquadHighpass', 'biquadRun', 'highpassFiltFilt', 'twfStatsOf', 'computeTwfStats', 'twfVerdict', 'evaluateCfTrend',
-      'ELEC_PEAK_GATE', 'ELEC_SHARE_MIN', 'localPeak', 'localFloor', 'electricalCheck', 'SB_GATE', 'sidebandCheck', 'twfSummaryOf', 'evaluateImpactTrend', 'SUB_ENERGY_SHARE', 'SUB_MIN_MMS', 'SUB_NARROW_HZ', 'subSyncCheck',
+      'ELEC_PEAK_GATE', 'ELEC_SHARE_MIN', 'localPeak', 'localFloor', 'electricalCheck', 'SB_GATE', 'sidebandCheck', 'velLineSpectrum', 'downsampleSpectrum', 'VEL_SPEC_MODE', 'fixDocVelSpectrum', 'SAMPLE_RATE_DEFAULT_HZ', 'VEL_F_LOW', 'twfSummaryOf', 'evaluateImpactTrend', 'SUB_ENERGY_SHARE', 'SUB_MIN_MMS', 'SUB_NARROW_HZ', 'subSyncCheck',
       'assessSignalQuality', 'medianOfNums', 'ENV_LINE_GATE', 'ENV_LINE_FLOOR_HZ', 'ENV_LINE_MAX_HALF_HZ', 'suppressDriveLines', 'envOptsFor', 'shaftScale', 'effectiveShaftHz', 'decodeRawBuffer'],
     regions: [['const MAINS_HZ', 'analyzeBearing']],
   });
@@ -481,5 +481,31 @@ for(const file of APP_FILES){
     const t = api.evaluateImpactTrend(rec);
     assert.equal(t.ax, 'X'); assert.equal(t.kind, 'falling');
     assert.equal(api.evaluateImpactTrend([{ velRMS: {} }, { cf: null }]), null, 'eski özetlerde cf yok');
+  });
+
+  test(`${file}: hız spektrumu tepesi gerçek RMS'i gösteriyor, kayıt ve eski kayıt tepeyi koruyor`, () => {
+    for (const fr of [24.6, 49.5, 8.33]) {
+      const accAmp = 22 * Math.SQRT2 / 1000 * 2 * Math.PI * fr / G;
+      const x = signal(sine(fr, accAmp));
+      const sp = api.computePSD(x, FS);
+      const fLow = fr < 10 ? 5.8 : 10;
+      const { velAmp, rmsVelocity } = api.velocitySpectrumFromAccelPSD(sp.freqs, sp.psd, fLow, 1000);
+      assert.ok(Math.abs(rmsVelocity - 22) < 0.3);
+      const line = api.velLineSpectrum(velAmp);
+      const pk = Math.max(...line);
+      assert.ok(Math.abs(pk - 22) < 0.8, `${fr} Hz tepe ${pk}`);
+      // Kayıt: 300 noktaya 'max' ile indirgenince tepe korunur
+      const ds = api.downsampleSpectrum(sp.freqs, line, 300, fLow, 1000, 'max');
+      assert.ok(Math.abs(Math.max(...ds.v) - pk) < 0.01);
+      // Eski kayıt (velSpectrum ortalamayla indirgenmiş): PSD'den yeniden üretilir
+      const oldDoc = { velSpectrum: { X: api.downsampleSpectrum(sp.freqs, velAmp, 300, fLow, 1000) },
+                       accelPSD: { X: api.downsampleSpectrum(sp.freqs, sp.psd, 640, 0, FS / 2, 'max') }, velBandLow: fLow, sampleRate: FS };
+      assert.ok(Math.max(...oldDoc.velSpectrum.X.v) < 8, 'eski kayıt hatalı küçük');
+      api.fixDocVelSpectrum(oldDoc);
+      const fixed = Math.max(...oldDoc.velSpectrum.X.v);
+      assert.ok(fixed > 17.5 && fixed < 23, `${fr} Hz düzeltilmiş eski kayıt tepe ${fixed}`);
+    }
+    const newDoc = { velSpecMode: api.VEL_SPEC_MODE, velSpectrum: { X: { f: [1], v: [5] } }, accelPSD: { X: { f: [1], v: [1] } } };
+    assert.equal(api.fixDocVelSpectrum(newDoc).velSpectrum.X.v[0], 5, 'yeni kayda dokunulmaz');
   });
 }

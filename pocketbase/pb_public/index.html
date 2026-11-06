@@ -5364,6 +5364,12 @@ function sidebandSummary(sb){
   const hit = (arr)=> arr.some(e=> e.r && e.r.center && e.r.ones >= 1);
   return { bpfi: hit(sb.BPFI), bsf: hit(sb.BSF) };
 }
+function buildCarpetHtml(ax){
+  const c = liveCarpet(ax);
+  if(!c) return '<div style="margin-top:8px; color:var(--text-dim)">Halı tipi taban yükselmesi yok (1–3 kHz tabanı normal).</div>';
+  const st = estimateStage(ax);
+  return `<div style="margin-top:10px; font-weight:600; color:var(--amber)">Halı tipi taban — yağ filmi yok/yetersiz</div>` + bulletList(carpetBullets(c, st && st.defectEvidence));
+}
 function buildSidebandHtml(ax){
   const sb = liveSidebands(ax);
   if(!sb) return '<div style="color:var(--text-dim)">Yan bant kontrolü için rulman kodu ve RPM gerekli.</div>';
@@ -5417,6 +5423,57 @@ function hpRmsBaseline(ax){
   if(!docs.length) return null;
   return medianOf(docs.slice(0, 3).map(d=>d.twf[ax].hp.rms));
 }
+// ============================================================
+// HALI TİPİ TABAN (geniş bantlı yükselme) — YAĞ FİLMİ / YAĞLAMA
+// Tekil, rastgele sivri tepeler ("çim") tek ölçümlük PSD'nin doğal istatistiğidir.
+// "Halı" ise farklıdır: 1–3 kHz bölgesinde TABANIN TAMAMI yükselir, belirgin
+// arıza tepesi ve darbe olmadan. Bu, bilye ile bilezik arasındaki yağ filminin
+// kalmadığını (metal-metal sürtünme) gösterir; yağlanınca düşer. Yağlamaya rağmen
+// düşmüyorsa ya da arıza frekansları/yan bantlarla birlikteyse ileri evre aşınmadır.
+// İki ölçüt (biri yeter):
+//  - trend: 1–3 kHz RMS bu noktanın ilk ölçümlerine göre ≥ CARPET_TREND katı (güçlü)
+//  - şekil: 1–3 kHz PSD medyanı 300–800 Hz medyanının ≥ CARPET_SHAPE katı ve
+//           sensör gürültüsünün belirgin üstünde (tek ölçümde, "olası")
+// ============================================================
+const CARPET_TREND = 2;
+const CARPET_SHAPE = 2;
+const CARPET_MIN_PSD = 1e-7;    // g²/Hz (≈0.3 mg/√Hz) — bunun altı sensör gürültüsü sayılır
+function bandMedian(freqs, psd, lo, hi){
+  const v = [];
+  for(let k=0;k<freqs.length;k++){ const f = freqs[k]; if(f >= lo && f <= hi && psd[k] > 0) v.push(psd[k]); }
+  return v.length ? medianOf(v) : null;
+}
+// freqs/psd: tam çözünürlüklü PSD (ya da null); ratio: 1–3 kHz RMS / ilk ölçümler (ya da null)
+function carpetCheck(freqs, psd, fs, ratio){
+  let hf = null, mf = null, shape = null;
+  if(freqs && psd){
+    hf = bandMedian(freqs, psd, 1000, Math.min(3000, fs/2*0.95));
+    mf = bandMedian(freqs, psd, 300, 800);
+    shape = (hf && mf) ? hf/mf : null;
+  }
+  const byTrend = ratio != null && ratio >= CARPET_TREND;
+  const byShape = shape != null && shape >= CARPET_SHAPE && hf >= CARPET_MIN_PSD;
+  if(!byTrend && !byShape) return null;
+  return { byTrend, byShape, ratio, shape, hfDensity: hf != null ? Math.sqrt(hf)*1000 : null }; // mg/√Hz
+}
+// Canlı eksen için (rapor ve tanı ekranları).
+function liveCarpet(ax){
+  const sp = axisSpectra[ax];
+  if(!sp) return null;
+  const h = sp.twf && sp.twf.hp;
+  const base = hpRmsBaseline(ax);
+  return carpetCheck(sp.freqs, sp.psd, SAMPLE_RATE_HZ, (h && base) ? h.rms/base : null);
+}
+function carpetBullets(c, withDefect){
+  const b = [];
+  if(c.byTrend) b.push(`1–3 kHz bandındaki titreşim tabanı bu noktanın ilk ölçümlerine göre ${c.ratio.toFixed(1)} kat yükselmiş.`);
+  if(c.byShape) b.push(`1–3 kHz PSD tabanı (${c.hfDensity.toFixed(2)} mg/√Hz) 300–800 Hz tabanının ${c.shape.toFixed(1)} katı — yüksek frekansta geniş bir "halı".`);
+  b.push('Anlamı: bilye ile bilezik arasındaki yağ filmi kalmamış ya da yetersiz (metal-metal sürtünme). Tekil sivri tepelerden ("çim") farklı olarak tabanın tamamı yükselir.');
+  if(withDefect) b.push('<b>Arıza frekansları/darbe bulgusuyla birlikte görüldüğü için ileri evre aşınma olasılığı yüksek.</b>');
+  b.push('Yapılacak: rulmanı yağlayıp aynı noktadan tekrar ölçün. Taban düşerse sorun yağlamaydı; düşmüyorsa ya da kısa sürede geri yükseliyorsa yüzey aşınması ilerlemiştir (ileri evre).');
+  return b;
+}
+
 const STAGE_LABELS = { 1:'Stage 1 / sağlam görünüyor', 2:'Stage 2 — erken hasar', 3:'Stage 3 — belirgin hasar', 4:'Stage 4 — ileri hasar' };
 const STAGE_ACTIONS = {
   1:'Rutin izlemeye devam.',
@@ -5452,15 +5509,21 @@ function estimateStage(ax){
   if(sb && sb.bsf) r.push('BSF tepesinde ±FTF yan bantları.');
   if(ftfSub) r.push('Kafes (FTF) frekansında tepe.');
   if(zoneHigh) r.push(`Genel hız Zone ${zone}.`);
+  const carpet = liveCarpet(ax);
+  const defectEvidence = !!(psdHit.length || envHit.length || twfL >= 1 || ftfSub || (sb && (sb.bpfi || sb.bsf)));
+  if(carpet) r.push('Yüksek frekansta halı tipi taban yükselmesi (yağ filmi yok/yetersiz).');
   let stage = 1;
-  if((tr && tr.kind === 'falling') || (zoneHigh && ratio >= 3 && h && h.cf < CF_WARN && (envHit.length || psdHit.length || ftfSub)) || (ftfSub && psdHit.length)) stage = 4;
+  if((tr && tr.kind === 'falling') || (zoneHigh && ratio >= 3 && h && h.cf < CF_WARN && (envHit.length || psdHit.length || ftfSub)) || (ftfSub && psdHit.length) || (carpet && defectEvidence && (psdHit.length || zoneHigh))) stage = 4;
   else if(psdHit.length && (envHit.length || twfL >= 1 || (sb && (sb.bpfi || sb.bsf)) || (res && res.level >= 3))) stage = 3;
-  else if(envHit.length || psdHit.length || twfL >= 1 || (tr && tr.kind === 'rising') || (ratio != null && ratio >= 1.5)) stage = 2;
+  else if(envHit.length || psdHit.length || twfL >= 1 || (tr && tr.kind === 'rising') || (ratio != null && ratio >= 1.5) || carpet) stage = 2;
   const caveats = [];
   if(!res) caveats.push(x.rpm ? 'Rulman kodu girilmemiş/tabloda yok: yalnızca zaman dalgası ve trende göre tahmin edildi.' : 'RPM girilmemiş: yalnızca zaman dalgasına göre tahmin edildi.');
   if(base == null) caveats.push('Karşılaştırılacak eski ölçüm yok: taban yükselmesi ve CF trendi değerlendirilemedi.');
   if(stage === 1) caveats.push('Stage 1 yalnızca 20–60 kHz ultrasonik bölgede görülür; WS300 bu aralığı ölçemez, bu yüzden "sağlam" ile "Stage 1" ayırt edilemez.');
-  return { stage, label: STAGE_LABELS[stage], action: STAGE_ACTIONS[stage], reasons: r, caveats };
+  let action = STAGE_ACTIONS[stage];
+  // Halı var ama arıza kanıtı yok: önce yağlama — ileri evreye ancak yağlamadan sonra karar verilir.
+  if(carpet && !defectEvidence && stage <= 2) action = 'Önce rulmanı yağlayıp tekrar ölçün: taban düşerse sorun yağlamaydı; düşmüyorsa ileri evre aşınmadır.';
+  return { stage, label: STAGE_LABELS[stage] + (carpet && !defectEvidence && stage <= 2 ? ' / yağlama yetersiz' : ''), action, reasons: r, caveats, carpet, defectEvidence };
 }
 
 // Eksen başına bulgular: [{level 0|1|2, title, text}]
@@ -5477,6 +5540,10 @@ function extraFindings(ax){
   }
   if(x.ski){
     out.push({ level:2, title:'Ski-slope / oturma geçişi', text: 'Hız spektrumu düşük frekansta yüksekten başlıyor ya da sinyalde yavaş kayma var: sensör yüzeye çarparak takılmış veya tam oturmadan ölçülmüş. Bu ölçümün hız ve crest factor değerleri güvenilmez — sensörü yerinde bırakıp birkaç saniye bekleyin ve tekrar ölçün.' });
+  }
+  if(st && st.carpet){
+    out.push({ level: st.defectEvidence ? 2 : 1, title:'Halı tipi taban — yağ filmi yok/yetersiz', short: st.defectEvidence ? 'Halı tipi taban + arıza bulgusu (ileri evre)' : 'Halı tipi taban: yağlama yetersiz olabilir',
+      text: bulletList(carpetBullets(st.carpet, st.defectEvidence)) });
   }
   if(x.twfV && x.ski){
     out.push({ level:0, title:'Zaman dalgası — crest factor / kurtosis', text:'Oturma geçişi olan ölçümde crest factor/kurtosis yorumlanmadı — ölçümü tekrarlayın.' });
@@ -6318,7 +6385,7 @@ function showDetail(ax){
   document.getElementById('bearingAnalysisText').innerHTML = buildBearingAnalysisHtml(bearingCode, rpmVal, bFreqs, liveShaft);
   const anaCtx = bearingCtx(ax, rpmVal, liveShaft, axisSpectra[ax].rmsVelocity);
   document.getElementById('psdAnalysisText').innerHTML = buildPsdAnalysisHtml(freqs, psd, bFreqs, anaCtx);
-  document.getElementById('sidebandText').innerHTML = buildSidebandHtml(ax);
+  document.getElementById('sidebandText').innerHTML = buildSidebandHtml(ax) + buildCarpetHtml(ax);
 
   // Zarf (envelope) spektrumu — 1x/2x/3x harmonik çizgileri, PSD panelindeki
   // aynı kutucuklarla (bearingMarkerVisible) açılıp kapanır, ayrı bir kutucuk
@@ -7782,6 +7849,7 @@ function buildTwfPrintHtml(ax){
       ${row('Ham (tüm bant)', st.raw)}${row('Rulman darbe bandı (1–3 kHz)', st.hp)}
     </table>
     ${v ? `<div style="font-size:12px; margin-top:5px;">${v.text}</div>` : ''}
+    ${hasLive && liveCarpet(ax) ? `<div style="font-size:12px; margin-top:5px; padding:6px 8px; border:1px solid #e0a000; border-radius:4px; background:#fff8e6;"><b>Halı tipi taban — yağ filmi yok/yetersiz.</b><ul style="margin:4px 0 0; padding-left:18px;">${carpetBullets(liveCarpet(ax), stg && stg.defectEvidence).map(t=>'<li>'+t+'</li>').join('')}</ul></div>` : ''}
     ${stg && stg.stage ? `<div style="font-size:12px; margin-top:5px; padding:6px 8px; border:1px solid #ccc; border-radius:4px;"><b>Tahmini rulman evresi: ${stg.label}.</b> ${stg.reasons.join(' ')} <b>${stg.action}</b>${stg.caveats.length ? '<br><span style="color:#777; font-size:11px;">' + stg.caveats.join(' ') + '</span>' : ''}</div>` : ''}
     <div style="font-size:10.5px; color:#888; margin-top:4px;">Crest factor = +PK / RMS. Rulman darbe bandında (1–3 kHz; mil kaynaklı titreşimler dışarıda kalır) sağlam rulmanda CF ≈ 3.5–4.5, kurtosis ≈ 3; darbe başlayınca CF 5–6 üstü. İleri evrede RMS artar ve CF yeniden düşer — trendle birlikte okunmalıdır.</div>
   </div>`;
@@ -7941,6 +8009,114 @@ function buildDiagPrintHtml(meta){
     ${!d.orient ? '<div style="font-size:11px; color:#888; margin-top:4px;">Sensör yönü (eksenel/dikey) bu nokta için tanımlanmamış.</div>' : ''}`;
 }
 
+// ============================================================
+// RAPOR — SON 3 ÖLÇÜM KARŞILAŞTIRMASI
+// Rapor tek ölçümü (canlı ya da en güncel kayıt) ayrıntılı anlatır; bu bölüm aynı
+// noktanın son 3 ölçümünü yan yana koyar: tarih, devir, eksen başına mm/s ve ISO
+// bölgesi, crest factor (1–3 kHz), rulman skoru; ayrıca eksen başına 3 ölçümün hız
+// spektrumu üst üste. Canlı ölçüm henüz kaydedilmediyse "şimdi" olarak listeye girer.
+// ============================================================
+const RECENT_REPORT_COUNT = 3;
+const RECENT_COLORS = ['#b0b0b0', '#2980b9', '#c0392b']; // eski → yeni
+function recentReportEntries(){
+  const docs = (trendDocsData || []).slice();
+  const code = bearingCodeForPoint();
+  const cls = selTag ? isoClass(selTag.kw, selTag.foundation) : null;
+  const list = docs.map(m=>({
+    ts: m.timestamp && m.timestamp.toDate ? m.timestamp.toDate() : null,
+    rpm: m.rpm || null,
+    vel: m.velRMS || {},
+    spec: m.velSpectrum || {},
+    cf: Object.fromEntries(['X','Y','Z'].map(ax=>[ax, m.twf && m.twf[ax] && m.twf[ax].hp ? m.twf[ax].hp.cf : null])),
+    bfi: code ? (()=>{ try{ const b = bfiForDoc(m, code); return Math.max(0, ...['X','Y','Z'].map(ax=> b[ax] ? bfiMax(b[ax]) || 0 : 0)); }catch(e){ return null; } })() : null,
+    live: false
+  }));
+  const hasLive = !!(axisSpectra.X || axisSpectra.Y || axisSpectra.Z);
+  if(hasLive && !liveSavedToSummary){
+    let bfi = null;
+    try{ const ad = liveAutoDiag(); if(ad && ad.bfi) bfi = Math.max(0, ...['X','Y','Z'].map(ax=> ad.bfi[ax] ? bfiMax(ad.bfi[ax].scores) || 0 : 0)); }catch(e){}
+    const spec = {};
+    ['X','Y','Z'].forEach(ax=>{ const sp = axisSpectra[ax]; if(sp) spec[ax] = downsampleSpectrum(sp.freqs, sp.velLine, 300, sp.velBand ? sp.velBand[0] : VEL_F_LOW, VEL_F_HIGH, 'max'); });
+    list.push({ ts: new Date(), rpm: parseFloat(document.getElementById('rpmInput').value) || null,
+      vel: Object.fromEntries(['X','Y','Z'].map(ax=>[ax, axisSpectra[ax] ? axisSpectra[ax].rmsVelocity : null])),
+      spec, cf: Object.fromEntries(['X','Y','Z'].map(ax=>[ax, axisSpectra[ax] && axisSpectra[ax].twf && axisSpectra[ax].twf.hp ? axisSpectra[ax].twf.hp.cf : null])),
+      bfi, live: true });
+  }
+  const out = list.slice(-RECENT_REPORT_COUNT);
+  out.forEach(e=>{ e.zone = Object.fromEntries(['X','Y','Z'].map(ax=>[ax, e.vel[ax] != null ? (isoEvaluate(e.vel[ax], cls) || null) : null])); });
+  return out;
+}
+function recentLabel(e){
+  if(!e.ts) return '—';
+  return e.ts.toLocaleDateString('tr-TR', {day:'2-digit', month:'2-digit', year:'2-digit'}) + ' ' + e.ts.toLocaleTimeString('tr-TR', {hour:'2-digit', minute:'2-digit'}) + (e.live ? ' (bu ölçüm)' : '');
+}
+function buildRecentOverlayImage(ax, entries){
+  const ds = entries.map((e,i)=>{
+    const s = e.spec && e.spec[ax];
+    if(!s || !s.f || !s.f.length) return null;
+    const off = RECENT_COLORS.length - entries.length;
+    return { label: recentLabel(e), data: s.f.map((f,j)=>({x:f, y:s.v[j]})), borderColor: RECENT_COLORS[i + off], borderWidth: i === entries.length-1 ? 1.6 : 1.1, pointRadius:0, tension:0 };
+  }).filter(Boolean);
+  if(ds.length < 2) return Promise.resolve(null);
+  return new Promise((resolve)=>{
+    const canvas = document.createElement('canvas');
+    canvas.width = 900; canvas.height = 280;
+    const chart = new Chart(canvas, {
+      type:'line', data:{ datasets: ds },
+      options:{ responsive:false, maintainAspectRatio:false, animation:false,
+        scales:{ x:{ type:'linear', min:0, max:VEL_F_HIGH, title:{display:true, text:'Hz', color:'#333'}, ticks:{color:'#333'}, grid:{color:'#ddd'} },
+                 y:{ min:0, title:{display:true, text:'mm/s', color:'#333'}, ticks:{color:'#333'}, grid:{color:'#ddd'} } },
+        plugins:{ legend:{ labels:{ color:'#333', boxWidth:14 } } } }
+    });
+    requestAnimationFrame(()=> requestAnimationFrame(()=>{ const img = chart.toBase64Image('image/png', 1); chart.destroy(); resolve(img); }));
+  });
+}
+// Eksen başına kısa değişim yorumu: "X: 2.10 → 3.40 → 4.30 mm/s (+%27 son ölçümde)"
+function recentTrendText(ax, entries){
+  const v = entries.map(e=>e.vel[ax]).filter(x=>x != null);
+  if(v.length < 2) return '';
+  const last = v[v.length-1], prev = v[v.length-2];
+  const pct = prev > 0 ? (last-prev)/prev*100 : 0;
+  const z = entries.map(e=>e.zone[ax] ? e.zone[ax].zone : null).filter(Boolean);
+  const zoneChange = z.length >= 2 && z[z.length-1] !== z[z.length-2] ? ` — bölge ${z[z.length-2]} → ${z[z.length-1]}` : '';
+  const dir = Math.abs(pct) < 10 ? 'yaklaşık aynı' : (pct > 0 ? `+%${pct.toFixed(0)} arttı` : `%${Math.abs(pct).toFixed(0)} azaldı`);
+  return `${ax}: ${v.map(x=>x.toFixed(2)).join(' → ')} mm/s (son ölçümde ${dir}${zoneChange})`;
+}
+async function buildRecentComparisonHtml(){
+  const entries = recentReportEntries();
+  if(entries.length < 2) return `<h2 style="font-size:15px; margin:20px 0 8px;">Son Ölçümler</h2><div style="font-size:12px; color:#777;">Bu nokta için karşılaştırılacak önceki ölçüm yok.</div>`;
+  const td = 'padding:6px; border:1px solid #ccc; font-size:12px;';
+  const velCell = (e, ax)=>{
+    const v = e.vel[ax], z = e.zone[ax];
+    if(v == null) return `<td style="${td}">—</td>`;
+    return `<td style="${td}"><b style="color:${z ? z.color : '#333'}">${v.toFixed(2)}</b>${z ? ` <span style="font-size:10.5px; color:${z.color}">${z.zone}</span>` : ''}</td>`;
+  };
+  const cfTxt = (e)=> ['X','Y','Z'].map(ax=> e.cf[ax] != null ? e.cf[ax].toFixed(1) : '—').join(' / ');
+  const rows = entries.slice().reverse().map(e=>`<tr${e.live ? ' style="background:#fff8e6;"' : ''}>
+      <td style="${td}">${recentLabel(e)}</td><td style="${td}">${e.rpm || '—'}</td>
+      ${velCell(e,'X')}${velCell(e,'Y')}${velCell(e,'Z')}
+      <td style="${td}">${cfTxt(e)}</td><td style="${td}">${e.bfi != null ? e.bfi.toFixed(0) + '%' : '—'}</td></tr>`).join('');
+  let charts = '';
+  for(const ax of ['X','Y','Z']){
+    const img = await buildRecentOverlayImage(ax, entries);
+    const txt = recentTrendText(ax, entries);
+    if(!img && !txt) continue;
+    charts += `<div style="margin-top:12px; page-break-inside:avoid;">
+      <h3 style="font-size:13px; margin:8px 0 4px;">${ax} Ekseni — Hız Spektrumu, son ${entries.length} ölçüm üst üste</h3>
+      ${txt ? `<div style="font-size:12px; margin-bottom:4px;">${txt}</div>` : ''}
+      ${img ? `<img src="${img}" style="width:100%; max-width:700px; border:1px solid #ddd; border-radius:4px;">` : ''}
+    </div>`;
+  }
+  return `<h2 style="font-size:15px; margin:20px 0 8px;">Son ${entries.length} Ölçüm Karşılaştırması</h2>
+    <div style="font-size:11.5px; color:#555; margin-bottom:6px;">Aynı noktanın son ölçümleri, en yenisi üstte. Renkli değerler ISO 10816-3 bölgesidir. Crest factor rulman darbe bandından (1–3 kHz) X / Y / Z sırasıyla; rulman skoru üç eksenin en yükseğidir.</div>
+    <table style="width:100%; border-collapse:collapse;">
+      <tr style="background:#eee;"><th style="${td} text-align:left;">Tarih</th><th style="${td} text-align:left;">RPM</th><th style="${td} text-align:left;">X mm/s</th><th style="${td} text-align:left;">Y mm/s</th><th style="${td} text-align:left;">Z mm/s</th><th style="${td} text-align:left;">Crest F. X/Y/Z</th><th style="${td} text-align:left;">Rulman skoru</th></tr>
+      ${rows}
+    </table>
+    ${charts}
+    <div style="font-size:10.5px; color:#888; margin-top:6px;">Grafiklerde gri en eski, mavi bir önceki, kırmızı en yeni ölçümdür. Aynı frekanstaki bir tepenin ölçümden ölçüme büyümesi, o tepeye karşılık gelen arızanın ilerlediğini gösterir.</div>`;
+}
+
 function buildPrintReportHtml(chartImages, meta, bearing){
   const now = new Date();
   const stamp = now.toLocaleString('tr-TR');
@@ -7992,6 +8168,8 @@ function buildPrintReportHtml(chartImages, meta, bearing){
 
     ${buildDiagPrintHtml(meta)}
 
+    ${meta.recentHtml || ''}
+
     ${bearing && bearing.code ? `
     <h2 style="font-size:15px; margin:20px 0 8px;">Rulman Arıza Frekansları</h2>
     ${buildBearingAnalysisPrintHtml(bearing.code, bearing.rpm, bearing.freqs, bearing.shaftHz)}
@@ -8000,7 +8178,7 @@ function buildPrintReportHtml(chartImages, meta, bearing){
 
     <h2 style="font-size:15px; margin:20px 0 4px;">Spektrum Grafikleri</h2>
     <div style="font-size:11.5px; color:#555; background:#f7f7f7; border:1px solid #e2e2e2; border-radius:6px; padding:8px 10px; margin-bottom:10px; line-height:1.5;">
-      <b>İvme PSD grafiklerinin okunması:</b> Bu grafikler tek bir ölçümden alınan ham (istatistiksel olarak yumuşatılmamış) frekans spektrumudur — geniş banttaki çok sayıda küçük "halı" tipi tepe normaldir ve tek başına rulman arızası anlamına gelmez. Karar, rulman arıza frekanslarının (ve harmoniklerinin) ölçümde gerçekten bir tepe olarak görünüp görünmediğine bakılarak verilir; 50 Hz şebeke ve devir harmoniklerine denk gelen tepeler rulman bulgusu sayılmaz. Aynı arıza hem PSD'de hem Zarf'ta görünüyorsa bulgu çok daha güvenilirdir. Nihai sonuç "Genel Değerlendirme" bölümündeki Seviye (1–4) ve gerekçelerdir.
+      <b>İvme PSD grafiklerinin okunması:</b> Bu grafikler tek bir ölçümden alınan ham (istatistiksel olarak yumuşatılmamış) frekans spektrumudur. <b>Tekil, rastgele sivri tepeler ("çim") normaldir</b> ve tek başına arıza anlamına gelmez. <b>"Halı" ise farklıdır:</b> yüksek frekansta (≈1–3 kHz) tabanın tamamı geniş bir bölgede yükseliyorsa bu, rulmanda yağ filminin kalmadığını (yetersiz yağlama, metal-metal sürtünme) gösterir; yağlamaya rağmen düşmüyorsa ya da arıza frekanslarıyla birlikteyse ileri evre aşınmadır — böyle bir durum eksen bölümlerinde ayrıca belirtilir. Karar, rulman arıza frekanslarının (ve harmoniklerinin) ölçümde gerçekten bir tepe olarak görünüp görünmediğine bakılarak verilir; 50 Hz şebeke ve devir harmoniklerine denk gelen tepeler rulman bulgusu sayılmaz. Aynı arıza hem PSD'de hem Zarf'ta görünüyorsa bulgu çok daha güvenilirdir. Nihai sonuç "Genel Değerlendirme" bölümündeki Seviye (1–4) ve gerekçelerdir.
     </div>
     ${chartsHtml}
 
@@ -8087,6 +8265,7 @@ async function printReport(){
   btn.textContent = 'Grafikler hazırlanıyor…';
   try{
     const chartImages = await buildReportChartImages(getSpec, getEnvSpec, bearing.freqs, reportCtxFor(meta, bearing), bearing.markerFreqs);
+    meta.recentHtml = await buildRecentComparisonHtml();
     document.getElementById('printReport').innerHTML = buildPrintReportHtml(chartImages, meta, bearing);
     window.print();
   } finally {
@@ -8133,6 +8312,7 @@ async function exportHtmlReport(){
   btn.textContent = 'Hazırlanıyor…';
   try{
     const axesData = {};
+    meta.recentHtml = await buildRecentComparisonHtml();
     for(const ax of ['X','Y','Z']){
       const spec = getSpec(ax);
       if(!spec) continue;
@@ -8219,7 +8399,7 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
       ${bearingSectionHtml}
       <h3 style="font-size:13px; margin:16px 0 6px;">İvme PSD (G²/Hz)</h3>
       <div style="font-size:11.5px; color:#555; background:#f7f7f7; border:1px solid #e2e2e2; border-radius:6px; padding:8px 10px; margin:4px 0 8px; line-height:1.5;">
-    <b>İvme PSD grafiklerinin okunması:</b> Geniş banttaki çok sayıda küçük "halı" tipi tepe normaldir, tek başına arıza anlamına gelmez. Karar, rulman arıza frekansları ve harmoniklerinin ölçümde gerçekten tepe olarak görünüp görünmediğine bakılarak verilir (50 Hz şebeke ve devir harmonikleri sayılmaz); aynı arıza PSD ve Zarf'ta birlikte görünürse bulgu güçlenir. Nihai sonuç "Genel Değerlendirme"deki Seviye (1–4) ve gerekçelerdir.
+    <b>İvme PSD grafiklerinin okunması:</b> Tekil, rastgele sivri tepeler ("çim") normaldir, tek başına arıza anlamına gelmez. Yüksek frekansta (≈1–3 kHz) tabanın tamamı geniş bir bölgede yükselmişse ("halı") bu, yağ filminin kalmadığını (yetersiz yağlama) gösterir; yağlamaya rağmen sürüyorsa ya da arıza frekanslarıyla birlikteyse ileri evre aşınmadır. Karar, rulman arıza frekansları ve harmoniklerinin ölçümde gerçekten tepe olarak görünüp görünmediğine bakılarak verilir (50 Hz şebeke ve devir harmonikleri sayılmaz); aynı arıza PSD ve Zarf'ta birlikte görünürse bulgu güçlenir. Nihai sonuç "Genel Değerlendirme"deki Seviye (1–4) ve gerekçelerdir.
   </div>
       <div class="rv-top bm-chips" data-kind="psd"></div>
       ${zoomToolbar(ax,'psd')}
@@ -8277,6 +8457,7 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
   </table>
   ${buildDiagPrintHtml(meta)}
 
+  ${meta.recentHtml || ''}
 
   <h2 style="font-size:15px; margin:20px 0 4px;">Spektrum Grafikleri</h2>
 

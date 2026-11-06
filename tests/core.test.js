@@ -31,7 +31,7 @@ for(const file of APP_FILES){
       'Q_CLIP_LSB', 'Q_CLIP_MIN_COUNT', 'Q_FLAT_STD_LSB', 'Q_STUCK_RUN', 'Q_SPIKE_LSB', 'Q_LEN_MISMATCH',
       'SKI_BLOCK_S', 'SKI_DRIFT_RATIO', 'SKI_DRIFT_MIN_G', 'SKI_BAND', 'SKI_VEL_RATIO', 'SKI_VEL_MIN', 'skiSlopeCheck',
       'TWF_HP_HZ', 'TWF_EDGE_FRAC', 'TWF_MIN_RMS_G', 'CF_WARN', 'CF_HIGH', 'KURT_WARN', 'KURT_HIGH', 'biquadHighpass', 'biquadRun', 'highpassFiltFilt', 'twfStatsOf', 'computeTwfStats', 'twfVerdict', 'evaluateCfTrend',
-      'ELEC_PEAK_GATE', 'ELEC_SHARE_MIN', 'localPeak', 'localFloor', 'electricalCheck', 'SB_GATE', 'sidebandCheck', 'velLineSpectrum', 'downsampleSpectrum', 'VEL_SPEC_MODE', 'fixDocVelSpectrum', 'SAMPLE_RATE_DEFAULT_HZ', 'VEL_F_LOW', 'twfSummaryOf', 'evaluateImpactTrend', 'SUB_ENERGY_SHARE', 'SUB_MIN_MMS', 'SUB_NARROW_HZ', 'subSyncCheck',
+      'ELEC_PEAK_GATE', 'ELEC_SHARE_MIN', 'localPeak', 'localFloor', 'electricalCheck', 'SB_GATE', 'sidebandCheck', 'CARPET_TREND', 'CARPET_SHAPE', 'CARPET_MIN_PSD', 'bandMedian', 'carpetCheck', 'velLineSpectrum', 'downsampleSpectrum', 'VEL_SPEC_MODE', 'fixDocVelSpectrum', 'SAMPLE_RATE_DEFAULT_HZ', 'VEL_F_LOW', 'twfSummaryOf', 'evaluateImpactTrend', 'SUB_ENERGY_SHARE', 'SUB_MIN_MMS', 'SUB_NARROW_HZ', 'subSyncCheck',
       'assessSignalQuality', 'medianOfNums', 'ENV_LINE_GATE', 'ENV_LINE_FLOOR_HZ', 'ENV_LINE_MAX_HALF_HZ', 'suppressDriveLines', 'envOptsFor', 'shaftScale', 'effectiveShaftHz', 'decodeRawBuffer'],
     regions: [['const MAINS_HZ', 'analyzeBearing']],
   });
@@ -507,5 +507,23 @@ for(const file of APP_FILES){
     }
     const newDoc = { velSpecMode: api.VEL_SPEC_MODE, velSpectrum: { X: { f: [1], v: [5] } }, accelPSD: { X: { f: [1], v: [1] } } };
     assert.equal(api.fixDocVelSpectrum(newDoc).velSpectrum.X.v[0], 5, 'yeni kayda dokunulmaz');
+  });
+
+  test(`${file}: halı tipi taban (yağ filmi) — şekil ve trend ölçütü`, () => {
+    const g = rng(81);
+    // sağlam: 1× + düz sensör gürültüsü → halı yok
+    const ok = signal((t) => 0.3 * Math.sin(2 * Math.PI * 24.6 * t) + 0.01 * g());
+    let sp = api.computePSD(ok, FS);
+    assert.equal(api.carpetCheck(sp.freqs, sp.psd, FS, 1.1), null);
+    // yağsız: 1–3 kHz'de geniş bant gürültü (rezonanslı filtrelenmiş gürültü) → halı
+    const hpN = api.highpassFiltFilt(Float64Array.from({ length: N }, () => g()), FS, 1000);
+    const bad = signal((t, k) => 0.3 * Math.sin(2 * Math.PI * 24.6 * t) + 0.003 * g() + 0.08 * hpN[k]);
+    sp = api.computePSD(bad, FS);
+    const c = api.carpetCheck(sp.freqs, sp.psd, FS, null);
+    assert.ok(c && c.byShape, JSON.stringify(c));
+    // trend: şekil yok ama ilk ölçümlere göre 2.5 kat
+    const t = api.carpetCheck(null, null, FS, 2.5);
+    assert.ok(t && t.byTrend && !t.byShape);
+    assert.equal(api.carpetCheck(null, null, FS, 1.4), null);
   });
 }

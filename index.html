@@ -1708,16 +1708,18 @@ async function saveMeasurementToFirestore(qualityIssues){
     velRMS: {},
     isoZone: {},
     velSpectrum: {},
+    velSpecMode: VEL_SPEC_MODE,
     accelPSD: {},
     envelope: {}
   };
   for(const ax of ['X','Y','Z']){
-    const {freqs, psd, velAmp, rmsVelocity, velBand} = axisSpectra[ax];
+    const {freqs, psd, velLine, rmsVelocity, velBand} = axisSpectra[ax];
     doc.velBandLow = velBand ? velBand[0] : VEL_F_LOW; // bu alan olmayan kayıtlar 10–1000 Hz
     doc.velRMS[ax] = Math.round(rmsVelocity*1000)/1000;
     const v = isoEvaluate(rmsVelocity, cls);
     doc.isoZone[ax] = v ? v.zone : null;
-    doc.velSpectrum[ax] = downsampleSpectrum(freqs, velAmp, 300, doc.velBandLow, VEL_F_HIGH);
+    // Tepeler sönmesin: aralıktaki en yüksek "tepe genliği" ('max'), ortalama DEĞİL.
+    doc.velSpectrum[ax] = downsampleSpectrum(freqs, velLine, 300, doc.velBandLow, VEL_F_HIGH, 'max');
     doc.accelPSD[ax] = downsampleSpectrum(freqs, psd, 640, 0, SAMPLE_RATE_HZ/2, 'max');
     // Zarf spektrumu — küçük (200 nokta, 0-500Hz) olduğu için maliyeti ihmal
     // edilebilir düzeyde; geçmiş ölçümlerde de zarf grafiği/analizi görülebilsin diye.
@@ -2230,8 +2232,8 @@ async function loadTrend(){
     });
     // En güncel kayıt — canlı ölçüm henüz alınmamışsa PDF Rapor'un bu
     // geçmiş ölçümden üretilebilmesi için saklanıyor.
-    trendDocsData = docs.map(d=>Object.assign({ _id: d.id }, d.data()));
-    lastHistoricalDoc = Object.assign({ _id: docs[docs.length - 1].id }, docs[docs.length - 1].data());
+    trendDocsData = docs.map(d=>fixDocVelSpectrum(Object.assign({ _id: d.id }, d.data())));
+    lastHistoricalDoc = trendDocsData[trendDocsData.length - 1];
     refreshPdfButtonState();
     trendShownDocs = trendDocsData.slice(-30);
     twfBackfillKey = null;
@@ -2398,7 +2400,7 @@ async function loadHistoryList(){
     }
     // En yeni en üstte olacak şekilde sırala (composite index gerektirmemek için istemci tarafında).
     historyDocsCache = snap.docs
-      .map(d=>({id:d.id, ...d.data()}))
+      .map(d=>fixDocVelSpectrum({id:d.id, ...d.data()}))
       .sort((a,b)=>{
         const ta = a.timestamp ? a.timestamp.toMillis() : 0;
         const tb = b.timestamp ? b.timestamp.toMillis() : 0;
@@ -4445,6 +4447,52 @@ function velocitySpectrumFromAccelPSD(freqs, psdG2, fLow, fHigh){
   return {velAmp, rmsVelocity};
 }
 
+// ---- Gösterim için "tepe genliği" spektrumu ----
+// velAmp bir frekans noktasının RMS katkısıdır; Hann penceresi tek bir tonun gücünü
+// 3–4 noktaya yayar, bu yüzden 22 mm/s'lik saf bir 1× tepesi tek noktada ≈15–16 mm/s
+// görünür. Grafikte, tepe listesinde ve raporlarda okunan değer o tonun gerçek RMS
+// hızı olsun diye her nokta komşularıyla birlikte (k-1, k, k+1 güç toplamı) alınır:
+// saf ton tepesi %3 içinde doğru okunur. Toplam RMS (OVL), ISO ve tanı payları
+// değişmez — onlar hâlâ velAmp'tan (Σ velAmp² = OVL²) hesaplanır.
+function velLineSpectrum(velAmp){
+  const n = velAmp.length, out = new Float64Array(n);
+  for(let k=0;k<n;k++){
+    if(!(velAmp[k] > 0)) continue;
+    const a = k > 0 ? velAmp[k-1] : 0, b = velAmp[k], c = k < n-1 ? velAmp[k+1] : 0;
+    out[k] = Math.sqrt(a*a + b*b + c*c);
+  }
+  return out;
+}
+// Bu düzeltmeden önce kaydedilmiş ölçümlerde velSpectrum, 300 noktaya ORTALAMA ile
+// indirgenmişti — dar tepeler 3–8 kat küçülüyordu (ör. 22 mm/s'lik 1× raporda ≈2–5
+// mm/s). Bu kayıtlarda hız spektrumu, tepeleri koruyarak ('max') kaydedilmiş ivme
+// PSD'sinden yeniden üretilir (Hann ENBW = 1.5 düzeltmesiyle; tepe en fazla ≈%18 düşük
+// okunabilir). Raporda ham veri varsa ensureHistoricalEnvelope bunu birebir yeniden hesaplar.
+const VEL_SPEC_MODE = 'line';
+function fixDocVelSpectrum(doc){
+  if(!doc || doc.velSpecMode === VEL_SPEC_MODE || doc._velFixed || !doc.velSpectrum || !doc.accelPSD) return doc;
+  const fs = doc.sampleRate || SAMPLE_RATE_DEFAULT_HZ;
+  const dfOrig = fs / nextPow2(12826);
+  const fLow = doc.velBandLow || VEL_F_LOW;
+  const out = {};
+  ['X','Y','Z'].forEach(ax=>{
+    const p = doc.accelPSD[ax];
+    if(!p || !p.f || !p.f.length){ if(doc.velSpectrum[ax]) out[ax] = doc.velSpectrum[ax]; return; }
+    const f = [], v = [];
+    for(let i=0;i<p.f.length;i++){
+      const fr = p.f[i];
+      if(fr < fLow || fr > VEL_F_HIGH) continue;
+      const a = Math.sqrt(Math.max(0, p.v[i]) * dfOrig * 1.5) * 9.80665 * 1000 / (2*Math.PI*fr);
+      f.push(fr); v.push(Number(a.toPrecision(4)));
+    }
+    out[ax] = { f, v };
+  });
+  doc.velSpectrumOrig = doc.velSpectrum;
+  doc.velSpectrum = out;
+  doc._velFixed = true;
+  return doc;
+}
+
 // ============================================================
 // GRAFİKLER
 // ============================================================
@@ -4635,7 +4683,7 @@ function computeResults(){
     const {freqs, psd} = computePSD(s, SAMPLE_RATE_HZ);
     const {velAmp, rmsVelocity} = velocitySpectrumFromAccelPSD(freqs, psd, fLow, VEL_F_HIGH);
     const rmsAccel = rmsAccelFromPSD(freqs, psd, fLow, VEL_F_HIGH);
-    axisSpectra[ax] = {freqs, psd, velAmp, rmsVelocity, rmsAccel, velBand:[fLow, VEL_F_HIGH],
+    axisSpectra[ax] = {freqs, psd, velAmp, velLine: velLineSpectrum(velAmp), rmsVelocity, rmsAccel, velBand:[fLow, VEL_F_HIGH],
       twf: computeTwfStats(s, SAMPLE_RATE_HZ), ski: skiSlopeCheck(s, SAMPLE_RATE_HZ)};
     document.getElementById('vel'+ax).textContent = rmsVelocity.toFixed(2);
     document.getElementById('accel'+ax).textContent = rmsAccel.toFixed(3);
@@ -4759,6 +4807,12 @@ async function ensureHistoricalEnvelope(doc){
     const {freqs: ef, amp} = envelopeSpectrum(s, raw.fs, ENV_DEFAULT_F_LOW, ENV_DEFAULT_F_HIGH, opts);
     const d = downsampleSpectrum(ef, amp, 200, 0, ENV_SPEC_F_MAX, 'max');
     out[ax] = { f: d.f, v: d.v, band: { low: ENV_DEFAULT_F_LOW, high: ENV_DEFAULT_F_HIGH }, driveSuppressed: !!opts };
+    // Eski yöntemle (ortalama) kaydedilmiş hız spektrumunu ham veriden birebir yeniden üret.
+    if(doc.velSpecMode !== VEL_SPEC_MODE && doc.velSpectrum){
+      const fLow = doc.velBandLow || VEL_F_LOW;
+      const {velAmp} = velocitySpectrumFromAccelPSD(freqs, psd, fLow, VEL_F_HIGH);
+      doc.velSpectrum[ax] = downsampleSpectrum(freqs, velLineSpectrum(velAmp), 300, fLow, VEL_F_HIGH, 'max');
+    }
   });
   if(Object.keys(out).length) doc._env = out;
 }
@@ -5430,7 +5484,9 @@ function velTopPeaks(freqs, velAmp, rms, count){
     if(out.some(p=>Math.abs(p.f - freqs[k]) < 3)) continue;
     let e = 0;
     for(let j=Math.max(0,k-2); j<=Math.min(freqs.length-1,k+2); j++) e += velAmp[j]*velAmp[j];
-    out.push({ k, f:freqs[k], v:velAmp[k], share: rms>0 ? Math.min(100, e/(rms*rms)*100) : 0 });
+    // v: tepenin gerçek RMS hızı (k-1..k+1 güç toplamı — bkz. velLineSpectrum)
+    const vl = Math.sqrt((k>0 ? velAmp[k-1]**2 : 0) + velAmp[k]**2 + (k<freqs.length-1 ? velAmp[k+1]**2 : 0));
+    out.push({ k, f:freqs[k], v:vl, share: rms>0 ? Math.min(100, e/(rms*rms)*100) : 0 });
     if(out.length >= count) break;
   }
   return out;
@@ -5596,10 +5652,10 @@ function velPreviousDoc(ax){
 
 // showDetail() içinden çağrılır: hız grafiğini kurar ve paneli bağlar.
 function setupVelPanel(ax){
-  const {freqs, velAmp} = axisSpectra[ax];
+  const {freqs, velLine} = axisSpectra[ax];
   const rpm = parseFloat(document.getElementById('rpmInput').value) || null;
   const fullPts = [];
-  for(let k=0;k<freqs.length && freqs[k]<=VEL_F_HIGH;k++) fullPts.push({x:freqs[k], y:velAmp[k]});
+  for(let k=0;k<freqs.length && freqs[k]<=VEL_F_HIGH;k++) fullPts.push({x:freqs[k], y:velLine[k]});
   const prevDoc = velPreviousDoc(ax);
   let prevPts = null, prevLabel = '', binnedPts = fullPts;
   if(prevDoc){
@@ -5607,7 +5663,7 @@ function setupVelPanel(ax){
     prevPts = pv.f.map((f,i)=>({x:f, y:pv.v[i]}));
     const ts = prevDoc.timestamp && prevDoc.timestamp.toDate ? prevDoc.timestamp.toDate() : null;
     prevLabel = 'önceki ölçüm' + (ts ? ' ('+ts.toLocaleDateString('tr-TR')+')' : '') + (prevDoc.velRMS && prevDoc.velRMS[ax]!=null ? ', '+prevDoc.velRMS[ax].toFixed(2)+' mm/s RMS' : '');
-    const ds = downsampleSpectrum(freqs, velAmp, pv.f.length, prevDoc.velBandLow || VEL_F_LOW, VEL_F_HIGH);
+    const ds = downsampleSpectrum(freqs, velLine, pv.f.length, prevDoc.velBandLow || VEL_F_LOW, VEL_F_HIGH, 'max');
     binnedPts = ds.f.map((f,i)=>({x:f, y:ds.v[i]}));
   }
   const keepCompare = velPanelState ? velPanelState.compare : false;
@@ -7263,7 +7319,7 @@ function buildSpectrumChartImage(freqs, values, xMax, yLabel, logY, color, label
 function liveReportSpec(ax){
   const spec = axisSpectra[ax];
   if(!spec) return null;
-  return { velF: spec.freqs, velV: spec.velAmp, psdF: spec.freqs, psdV: spec.psd, rmsVelocity: spec.rmsVelocity };
+  return { velF: spec.freqs, velV: spec.velLine, psdF: spec.freqs, psdV: spec.psd, rmsVelocity: spec.rmsVelocity };
 }
 function historicalReportSpec(doc, ax){
   if(!doc || !doc.velSpectrum || !doc.velSpectrum[ax] || !doc.accelPSD || !doc.accelPSD[ax]) return null;

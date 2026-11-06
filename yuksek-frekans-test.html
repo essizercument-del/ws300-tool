@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WS300 — Yüksek Frekans Testi</title>
+<style>
+  :root{ --bg:#0b0f0c; --panel:#121814; --panel-2:#18201b; --line:#1f2a23; --text:#d8e3dc; --dim:#7c8a80;
+         --green:#3dffa0; --amber:#ffb238; --red:#ff5d5d; --blue:#5ec8ff; }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  header{ padding:16px 18px 10px; border-bottom:1px solid var(--line); }
+  header .k{ font-family:ui-monospace,monospace; font-size:11px; letter-spacing:2px; color:var(--green); }
+  header h1{ font-size:20px; margin:6px 0 2px; }
+  header .s{ font-size:12.5px; color:var(--dim); line-height:1.5; }
+  .wrap{ padding:0 18px 40px; }
+  .bar{ display:flex; align-items:center; gap:8px; margin-top:12px; padding:8px 8px 8px 12px; background:var(--panel);
+        border:1px solid var(--line); border-radius:10px; font-family:ui-monospace,monospace; font-size:12px; }
+  .dot{ width:9px; height:9px; border-radius:50%; background:var(--dim); flex-shrink:0; }
+  .dot.on{ background:var(--green); } .dot.busy{ background:var(--amber); } .dot.err{ background:var(--red); }
+  #status{ flex:1; }
+  button{ font:inherit; font-size:13.5px; padding:11px 14px; border-radius:9px; border:1px solid var(--line);
+          background:var(--panel-2); color:var(--text); cursor:pointer; }
+  button:disabled{ opacity:.45; cursor:default; }
+  button.primary{ background:var(--green); color:#04140b; border-color:var(--green); font-weight:600; }
+  .btns{ display:grid; grid-template-columns:1fr; gap:8px; margin-top:12px; }
+  .btn-sub{ display:block; font-size:11px; font-weight:400; opacity:.8; margin-top:2px; }
+  .panel{ background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; margin-top:12px; }
+  .panel h2{ font-size:13px; margin:0 0 8px; color:var(--dim); font-weight:600; letter-spacing:.5px; text-transform:uppercase; }
+  .note{ font-size:12px; color:var(--dim); line-height:1.55; }
+  .tabs{ display:flex; gap:6px; margin-bottom:8px; }
+  .tabs button{ flex:1; padding:8px; font-size:12.5px; }
+  .tabs button.on{ border-color:var(--green); color:var(--green); }
+  canvas{ width:100%; height:260px; display:block; background:var(--panel-2); border-radius:8px; }
+  table{ width:100%; border-collapse:collapse; font-size:12px; }
+  th,td{ padding:6px 4px; border-bottom:1px solid var(--line); text-align:right; }
+  th:first-child,td:first-child{ text-align:left; }
+  th{ color:var(--dim); font-weight:600; }
+  .verdict{ font-size:13px; line-height:1.6; }
+  .verdict b.ok{ color:var(--green); } .verdict b.warn{ color:var(--amber); } .verdict b.bad{ color:var(--red); }
+  ul{ margin:4px 0; padding-left:18px; }
+  #log{ font-family:ui-monospace,monospace; font-size:10.5px; color:var(--dim); white-space:pre-wrap; max-height:200px; overflow:auto; }
+  .legend{ display:flex; gap:12px; flex-wrap:wrap; font-size:11.5px; margin-top:6px; }
+  .legend span::before{ content:''; display:inline-block; width:14px; height:3px; margin-right:5px; vertical-align:middle; background:var(--c); }
+</style>
+</head>
+<body>
+<header>
+  <div class="k">CTC WS300 · DENEME</div>
+  <h1>Yüksek Frekans Testi</h1>
+  <div class="s">Aynı noktayı iki ayarla ölçer: normal (6.4 kHz örnekleme, 2 s, ≈3 kHz'e kadar) ve yüksek (12.8 kHz örnekleme, 1 s, ≈6 kHz'e kadar). Soru: 3 kHz üstünde gerçek titreşim sinyali geliyor mu? Hiçbir şey kaydedilmez; ana programın trendleri etkilenmez.</div>
+</header>
+<div class="wrap">
+  <div class="bar"><div class="dot" id="dot"></div><div id="status">Sensör bağlı değil</div><button id="btnConnect" type="button">Bağlan</button></div>
+
+  <div class="btns">
+    <button class="primary" id="btnBoth" type="button" disabled>Motorda ölç: normal + yüksek<span class="btn-sub">sensör motor üzerindeyken — iki ölçüm arka arkaya</span></button>
+    <button id="btnNoise" type="button" disabled>Gürültü ölçümü (yüksek ayar)<span class="btn-sub">sensörü motordan alıp yumuşak bir yüzeye (bez, sünger) hareketsiz koyun — sensörün kendi gürültüsü</span></button>
+  </div>
+
+  <div class="panel" id="resultPanel" style="display:none">
+    <h2>Sonuç</h2>
+    <div class="tabs" id="axisTabs">
+      <button type="button" data-ax="X" class="on">X</button><button type="button" data-ax="Y">Y</button><button type="button" data-ax="Z">Z (eksenel)</button>
+    </div>
+    <canvas id="chart" width="900" height="520"></canvas>
+    <div class="legend" id="legend"></div>
+    <div class="note" style="margin-top:6px">Dikey eksen logaritmik: ivme yoğunluğu (mg/√Hz). Kesikli çizgi: 3 kHz (normal ayarın sınırı).</div>
+    <div style="margin-top:12px; overflow-x:auto"><table id="bandTable"></table></div>
+    <div class="verdict" id="verdict" style="margin-top:12px"></div>
+  </div>
+
+  <div class="panel" id="dlPanel" style="display:none">
+    <h2>Veriyi gönder</h2>
+    <div class="note">Ham ölçümleri tek CSV dosyası olarak indirip bana gönderebilirsin; ayrıntılı inceleme için.</div>
+    <button id="btnCsv" type="button" style="margin-top:8px">CSV indir</button>
+  </div>
+
+  <div class="panel">
+    <h2>Nasıl kullanılır</h2>
+    <ul class="note">
+      <li>Sensörü normal ölçüm noktasına koy (tercihen rulmanından şüphelendiğin bir motor), <b>Motorda ölç</b>'e bas. İki ölçüm yaklaşık 15 saniye sürer.</li>
+      <li>Ardından sensörü motordan alıp bir beze ya da süngere hareketsiz koy, <b>Gürültü ölçümü</b>'ne bas. Bu, 3–6 kHz'te "sinyal mi gürültü mü" sorusunun cevabı için referans olur.</li>
+      <li>Yüksek ayar sensöre yalnızca bu ölçüm için yazılır. Ana programda ya da Able Handy'de bir sonraki ölçüm normal ayarı yeniden yazar.</li>
+    </ul>
+  </div>
+
+  <div class="panel"><h2>Kayıt</h2><div id="log"></div></div>
+</div>
+
+<script>
+// ============================================================
+// PROTOKOL (ana programla aynı; ayar baytları Able Patrol'den)
+// Ayar komutu 8 bayt: [0, 1, örnekleme kodu, 0, okuma uzunluğu u32 LE]
+//   örnekleme kodu 4 → 6400 Hz (sensör 6512 bildiriyor), 5 → 12800 Hz
+//   okuma uzunluğu: eksen başına örnek sayısı (12800 = 0x3200 → bayt5 = 50)
+// ============================================================
+const BASE = "-5b49-42cb-9683-3a68b834786f";
+const SVC_CONFIG = "90829500" + BASE, CHR_CONFIG = "90829501" + BASE;
+const SVC_TRIGGER = "90829700" + BASE, CHR_TRIGGER = "90829703" + BASE;
+const SVC_DATA = "90829600" + BASE;
+const CHAR_MAP = {
+  ["90829601"+BASE]: {axis:'Z', role:'data'}, ["90829603"+BASE]: {axis:'Z', role:'count'},
+  ["90829604"+BASE]: {axis:'X', role:'data'}, ["90829605"+BASE]: {axis:'X', role:'count'},
+  ["90829606"+BASE]: {axis:'Y', role:'data'}, ["90829607"+BASE]: {axis:'Y', role:'count'},
+};
+const MODES = {
+  normal: { label:'Normal (6.4 kHz, 2 s)', bytes:[0,1,4,0,0,50,0,0], fsDefault:6510, color:'#5ec8ff' },
+  high:   { label:'Yüksek (12.8 kHz, 1 s)', bytes:[0,1,5,0,0,50,0,0], fsDefault:12800, color:'#ff5d5d' },
+  noise:  { label:'Gürültü (yüksek ayar, sensör hareketsiz)', bytes:[0,1,5,0,0,50,0,0], fsDefault:12800, color:'#9aa59e' },
+};
+const SCALE_G_PER_LSB = 0.0006104;
+
+let device = null, server = null, busy = false;
+const results = {}; // mode -> {fs, axes:{X,Y,Z: Float32Array}, psd:{X:{f,p}}, ts}
+let curAxis = 'X';
+
+const $ = (id)=>document.getElementById(id);
+function log(m){ const el = $('log'); el.textContent += new Date().toLocaleTimeString('tr-TR') + '  ' + m + '\n'; el.scrollTop = el.scrollHeight; }
+function setStatus(t, cls){ $('status').textContent = t; $('dot').className = 'dot' + (cls ? ' ' + cls : ''); }
+function setButtons(){
+  const ok = !!(server && server.connected) && !busy;
+  $('btnBoth').disabled = !ok; $('btnNoise').disabled = !ok;
+  $('btnConnect').disabled = busy;
+}
+const sleep = (ms)=> new Promise(r=>setTimeout(r, ms));
+async function writeChr(ch, bytes){
+  const u8 = new Uint8Array(bytes);
+  if(ch.writeValueWithoutResponse) await ch.writeValueWithoutResponse(u8); else await ch.writeValue(u8);
+}
+
+async function connect(){
+  if(!navigator.bluetooth){ setStatus('Bu tarayıcıda Web Bluetooth yok (Android Chrome gerekli)', 'err'); return; }
+  try{
+    setStatus('Cihaz seçiliyor…', 'busy');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix:'CTC' }, { namePrefix:'WS300' }, { services:[SVC_DATA] }],
+      optionalServices: [SVC_CONFIG, SVC_TRIGGER, SVC_DATA]
+    });
+    device.addEventListener('gattserverdisconnected', ()=>{ setStatus('Bağlantı koptu', 'err'); setButtons(); });
+    setStatus('Bağlanıyor…', 'busy');
+    server = await device.gatt.connect();
+    setStatus('Bağlı: ' + (device.name || 'WS300'), 'on');
+    log('Bağlandı: ' + (device.name || 'WS300'));
+  }catch(e){ setStatus('Bağlanamadı: ' + e.message, 'err'); log('Bağlantı hatası: ' + e.message); }
+  setButtons();
+}
+
+// Tek ölçüm: ayarı yaz, örnekleme hızını oku, bildirimleri aç, tetikle, topla.
+async function measure(mode){
+  const M = MODES[mode];
+  const buffers = { X:[], Y:[], Z:[] }, expected = { X:null, Y:null, Z:null }, lastT = { X:0, Y:0, Z:0 };
+  let triggered = false;
+  const onNotify = (ev)=>{
+    const info = CHAR_MAP[ev.target.uuid]; if(!info || !triggered) return;
+    const dv = ev.target.value;
+    if(info.role === 'count'){ const raw = dv.getInt8(0); expected[info.axis] = raw < 0 ? 256 + raw : raw; }
+    else{
+      const seq = dv.getUint16(0, true);
+      if(buffers[info.axis].some(p=>p.seq === seq)) return;
+      buffers[info.axis].push({ seq, bytes: new Uint8Array(dv.buffer.slice(dv.byteOffset+2, dv.byteOffset+dv.byteLength)) });
+      lastT[info.axis] = Date.now();
+    }
+  };
+  const chars = [];
+  try{
+    const cfg = await (await server.getPrimaryService(SVC_CONFIG)).getCharacteristic(CHR_CONFIG);
+    await writeChr(cfg, M.bytes);
+    log(`${M.label}: ayar yazıldı [${M.bytes.join(',')}]`);
+    let fs = M.fsDefault;
+    try{
+      const v = await cfg.readValue();
+      if(v.byteLength >= 16){ const r = v.getUint16(14, true); if(r >= 3000 && r <= 30000) fs = r; }
+      log(`${M.label}: sensörün bildirdiği örnekleme hızı ${fs} Hz`);
+    }catch(e){ log('Örnekleme hızı okunamadı, varsayılan ' + fs + ' Hz'); }
+    const data = await server.getPrimaryService(SVC_DATA);
+    for(const uuid of Object.keys(CHAR_MAP)){
+      const ch = await data.getCharacteristic(uuid);
+      ch.addEventListener('characteristicvaluechanged', onNotify);
+      await ch.startNotifications();
+      chars.push(ch);
+    }
+    const trig = await (await server.getPrimaryService(SVC_TRIGGER)).getCharacteristic(CHR_TRIGGER);
+    triggered = true;
+    await writeChr(trig, [1]);
+    // bekle: her eksende beklenen paket sayısı + 250 ms sessizlik
+    const t0 = Date.now();
+    while(true){
+      await sleep(100);
+      const now = Date.now();
+      const done = ['X','Y','Z'].every(ax=> expected[ax] !== null && buffers[ax].length >= expected[ax]+1 && now - lastT[ax] >= 250);
+      if(done) break;
+      if(now - t0 > 20000) throw new Error('Zaman aşımı (' + ['X','Y','Z'].map(ax=>`${ax}:${buffers[ax].length}/${expected[ax]!==null?expected[ax]+1:'?'}`).join(', ') + ')');
+    }
+    const axes = {};
+    for(const ax of ['X','Y','Z']){
+      const pk = buffers[ax].sort((a,b)=>a.seq-b.seq);
+      for(let i=1;i<pk.length;i++) if(pk[i].seq !== pk[i-1].seq+1) throw new Error(`${ax}: paket kaybı — tekrar ölçün`);
+      let len = 0; pk.forEach(p=> len += p.bytes.length);
+      const merged = new Uint8Array(len); let o = 0; pk.forEach(p=>{ merged.set(p.bytes, o); o += p.bytes.length; });
+      const n = Math.floor(len/2), dv = new DataView(merged.buffer), g = new Float32Array(n);
+      for(let i=0;i<n;i++) g[i] = dv.getInt16(i*2, true) * SCALE_G_PER_LSB;
+      axes[ax] = g;
+    }
+    log(`${M.label}: ${axes.X.length} örnek/eksen = ${(axes.X.length/fs).toFixed(2)} s`);
+    return { fs, axes, ts: new Date() };
+  } finally {
+    for(const ch of chars){ try{ ch.removeEventListener('characteristicvaluechanged', onNotify); await ch.stopNotifications(); }catch(e){} }
+  }
+}
+
+async function run(modes){
+  if(busy) return;
+  busy = true; setButtons();
+  try{
+    for(const m of modes){
+      setStatus(MODES[m].label + ' ölçülüyor…', 'busy');
+      const r = await measure(m);
+      r.psd = {};
+      ['X','Y','Z'].forEach(ax=> r.psd[ax] = welchPsd(r.axes[ax], r.fs));
+      results[m] = r;
+      await sleep(400);
+    }
+    // ana programın varsayılanına geri dön (yalnızca ayar yazılır, ölçüm tetiklenmez)
+    try{ const cfg = await (await server.getPrimaryService(SVC_CONFIG)).getCharacteristic(CHR_CONFIG); await writeChr(cfg, MODES.normal.bytes); log('Ayar normale döndürüldü.'); }catch(e){}
+    setStatus('Bağlı: ' + (device.name || 'WS300') + ' — ölçüm tamam', 'on');
+    render();
+  }catch(e){
+    setStatus('Ölçüm başarısız: ' + e.message, 'err'); log('Hata: ' + e.message);
+  }
+  busy = false; setButtons();
+}
+
+// ============================================================
+// ANALİZ — Welch PSD (4096 nokta Hann, %50 bindirme): tek kayıttaki rastgele
+// sıçramaları ortalayarak bant seviyelerini karşılaştırılabilir kılar.
+// ============================================================
+function fftInPlace(re, im){
+  const n = re.length;
+  for(let i=1, j=0; i<n; i++){
+    let bit = n >> 1;
+    for(; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if(i < j){ [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+  }
+  for(let len=2; len<=n; len<<=1){
+    const ang = -2*Math.PI/len, wr = Math.cos(ang), wi = Math.sin(ang);
+    for(let i=0; i<n; i+=len){
+      let cr = 1, ci = 0;
+      for(let k=0; k<len/2; k++){
+        const ar = re[i+k], ai = im[i+k];
+        const br = re[i+k+len/2]*cr - im[i+k+len/2]*ci, bi = re[i+k+len/2]*ci + im[i+k+len/2]*cr;
+        re[i+k] = ar+br; im[i+k] = ai+bi; re[i+k+len/2] = ar-br; im[i+k+len/2] = ai-bi;
+        const t = cr*wr - ci*wi; ci = cr*wi + ci*wr; cr = t;
+      }
+    }
+  }
+}
+function welchPsd(x, fs){
+  const N = 4096, step = N/2;
+  const w = new Float64Array(N); let wss = 0;
+  for(let i=0;i<N;i++){ w[i] = 0.5 - 0.5*Math.cos(2*Math.PI*i/(N-1)); wss += w[i]*w[i]; }
+  let mean = 0; for(let i=0;i<x.length;i++) mean += x[i]; mean /= x.length;
+  const acc = new Float64Array(N/2+1); let segs = 0;
+  for(let s=0; s+N<=x.length; s+=step){
+    const re = new Float64Array(N), im = new Float64Array(N);
+    for(let i=0;i<N;i++) re[i] = (x[s+i]-mean)*w[i];
+    fftInPlace(re, im);
+    for(let k=0;k<=N/2;k++) acc[k] += (re[k]*re[k] + im[k]*im[k]);
+    segs++;
+  }
+  const f = new Float64Array(N/2+1), p = new Float64Array(N/2+1);
+  for(let k=0;k<=N/2;k++){ f[k] = k*fs/N; p[k] = acc[k]/segs/(fs*wss)*((k===0||k===N/2)?1:2); }
+  return { f, p, df: fs/N };
+}
+function bandRms(psd, lo, hi){ // g RMS
+  let s = 0; for(let k=0;k<psd.f.length;k++) if(psd.f[k] >= lo && psd.f[k] < hi) s += psd.p[k]*psd.df; return Math.sqrt(s);
+}
+function bandMedianDensity(psd, lo, hi){ // mg/√Hz
+  const v = []; for(let k=0;k<psd.f.length;k++) if(psd.f[k] >= lo && psd.f[k] < hi) v.push(psd.p[k]);
+  if(!v.length) return null; v.sort((a,b)=>a-b); return Math.sqrt(v[Math.floor(v.length/2)])*1000;
+}
+
+// ============================================================
+// GÖSTERİM
+// ============================================================
+const BANDS = [ [10,1000,'10–1000 Hz'], [1000,3000,'1–3 kHz'], [3000,4500,'3–4.5 kHz'], [4500,6000,'4.5–6 kHz'] ];
+function render(){
+  $('resultPanel').style.display = 'block';
+  $('dlPanel').style.display = 'block';
+  drawChart();
+  // tablo
+  const modes = ['normal','high','noise'].filter(m=>results[m]);
+  let h = '<tr><th>Bant ('+curAxis+')</th>' + modes.map(m=>`<th>${m==='normal'?'Normal':m==='high'?'Yüksek':'Gürültü'}<br><span style="font-weight:400">mg RMS · taban</span></th>`).join('') + '</tr>';
+  BANDS.forEach(([lo,hi,lbl])=>{
+    h += `<tr><td>${lbl}</td>` + modes.map(m=>{
+      const r = results[m], ps = r.psd[curAxis];
+      if(hi > r.fs/2*0.98) return '<td>—</td>';
+      return `<td>${(bandRms(ps,lo,hi)*1000).toFixed(1)} · ${bandMedianDensity(ps,lo,hi).toFixed(3)}</td>`;
+    }).join('') + '</tr>';
+  });
+  $('bandTable').innerHTML = h + '<tr><td colspan="9" style="text-align:left; color:var(--dim); font-size:11px; border:none">mg RMS: banttaki toplam titreşim. Taban: bandın ortanca yoğunluğu (mg/√Hz) — tekil tepelerden etkilenmez.</td></tr>';
+  $('verdict').innerHTML = verdictHtml();
+}
+function verdictHtml(){
+  const n = results.normal, hgh = results.high, nz = results.noise, ax = curAxis;
+  const out = [];
+  if(hgh && hgh.fs < 10000) out.push(`<b class="bad">Yüksek ayar uygulanmadı:</b> sensör ${hgh.fs} Hz bildirdi. Bu sensörde örnekleme kodu 5 çalışmıyor olabilir.`);
+  if(n && hgh && hgh.fs >= 10000){
+    const a = bandRms(n.psd[ax],1000,3000), b = bandRms(hgh.psd[ax],1000,3000);
+    const r = a > 0 ? b/a : 0;
+    out.push(r > 0.6 && r < 1.6
+      ? `<b class="ok">Tutarlılık iyi:</b> iki ayarın ortak bandında (1–3 kHz) seviye benzer (oran ${r.toFixed(2)}). Ölçek ve örnekleme hızı doğru okunuyor.`
+      : `<b class="warn">Tutarlılık zayıf:</b> 1–3 kHz seviyesi iki ayarda farklı (oran ${r.toFixed(2)}). Motor yükü iki ölçüm arasında değişmiş olabilir; tekrar deneyin.`);
+  }
+  if(hgh && hgh.fs >= 10000){
+    if(!nz) out.push(`<b class="warn">Karar için gürültü ölçümü gerekli:</b> sensörü hareketsiz bir yüzeye koyup "Gürültü ölçümü"ne basın.`);
+    else{
+      // Bant RMS'i karşılaştırılır (taban ortancası değil): rulman darbeleri bu bantta sık
+      // aralıklı tepeler dizisi olarak durur, ortanca bunları görmez; toplam enerji görür.
+      const sig = bandRms(hgh.psd[ax],3000,4500), noi = bandRms(nz.psd[ax],3000,4500);
+      const sig2 = bandRms(hgh.psd[ax],4500,6000), noi2 = bandRms(nz.psd[ax],4500,6000);
+      const r1 = noi > 0 ? sig/noi : 0, r2 = noi2 > 0 ? sig2/noi2 : 0;
+      const txt = (r)=> r >= 3 ? '<b class="ok">gerçek sinyal var</b>' : r >= 1.5 ? '<b class="warn">zayıf sinyal</b>' : '<b class="bad">gürültüden ayırt edilemiyor</b>';
+      out.push(`3–4.5 kHz: motordaki titreşim sensör gürültüsünün ${r1.toFixed(1)} katı → ${txt(r1)}.`);
+      out.push(`4.5–6 kHz: motordaki titreşim sensör gürültüsünün ${r2.toFixed(1)} katı → ${txt(r2)}.`);
+      out.push(r1 >= 3
+        ? 'Sonuç: yüksek ayar bu motorda 3 kHz üstünde işe yarar bilgi veriyor — ana programa "yüksek frekans" ölçüm seçeneği eklemek anlamlı.'
+        : 'Sonuç: bu motorda 3 kHz üstü sensör gürültüsüne yakın. Başka bir motorda (özellikle rulmanı şüpheli olanda) da deneyin; hep böyleyse yüksek ayar bize bir şey kazandırmıyor.');
+    }
+  }
+  return out.length ? '<ul>' + out.map(t=>'<li>'+t+'</li>').join('') + '</ul>' : '';
+}
+function drawChart(){
+  const cv = $('chart'), c = cv.getContext('2d'), W = cv.width, H = cv.height;
+  const L = 70, R = 14, T = 14, B = 46;
+  c.clearRect(0,0,W,H); c.font = '20px system-ui'; c.fillStyle = '#7c8a80'; c.strokeStyle = '#1f2a23';
+  const series = ['normal','high','noise'].filter(m=>results[m]).map(m=>({ m, ps: results[m].psd[curAxis], color: MODES[m].color }));
+  let fMax = 0, yMin = Infinity, yMax = 0;
+  series.forEach(s=>{ fMax = Math.max(fMax, s.ps.f[s.ps.f.length-1]); for(let k=2;k<s.ps.f.length;k++){ const v = Math.sqrt(s.ps.p[k])*1000; if(v>0){ yMin = Math.min(yMin, v); yMax = Math.max(yMax, v); } } });
+  fMax = Math.ceil(fMax/500)*500;
+  const lyMin = Math.floor(Math.log10(Math.max(yMin, 1e-4))), lyMax = Math.ceil(Math.log10(yMax || 1));
+  const X = (f)=> L + (W-L-R)*f/fMax, Y = (v)=> T + (H-T-B)*(1 - (Math.log10(v)-lyMin)/(lyMax-lyMin));
+  for(let e=lyMin; e<=lyMax; e++){ const y = Y(Math.pow(10,e)); c.beginPath(); c.moveTo(L,y); c.lineTo(W-R,y); c.stroke(); c.fillText(e>=0 ? String(Math.pow(10,e)) : Math.pow(10,e).toPrecision(1), 4, y+6); }
+  for(let f=0; f<=fMax; f+=1000){ const x = X(f); c.beginPath(); c.moveTo(x,T); c.lineTo(x,H-B); c.stroke(); c.fillText((f/1000)+'k', x-10, H-B+26); }
+  c.fillText('Hz', W-R-30, H-6);
+  c.save(); c.setLineDash([8,6]); c.strokeStyle = '#ffb238'; c.beginPath(); c.moveTo(X(3000),T); c.lineTo(X(3000),H-B); c.stroke(); c.restore();
+  series.forEach(s=>{
+    c.strokeStyle = s.color; c.lineWidth = 2; c.beginPath(); let first = true;
+    for(let k=2;k<s.ps.f.length;k++){ const v = Math.sqrt(s.ps.p[k])*1000; if(!(v>0)) continue; const x = X(s.ps.f[k]), y = Y(v); if(first){ c.moveTo(x,y); first = false; } else c.lineTo(x,y); }
+    c.stroke(); c.lineWidth = 1;
+  });
+  $('legend').innerHTML = series.map(s=>`<span style="--c:${s.color}">${MODES[s.m].label} · ${results[s.m].fs} Hz</span>`).join('');
+}
+function downloadCsv(){
+  const lines = ['# WS300 yüksek frekans testi — ' + new Date().toLocaleString('tr-TR')];
+  ['normal','high','noise'].filter(m=>results[m]).forEach(m=>{
+    const r = results[m];
+    lines.push(`# mod=${m} fs=${r.fs} n=${r.axes.X.length} ayar=${MODES[m].bytes.join(' ')}`);
+    lines.push('mod,i,X_g,Y_g,Z_g');
+    for(let i=0;i<r.axes.X.length;i++) lines.push(`${m},${i},${r.axes.X[i].toFixed(5)},${r.axes.Y[i].toFixed(5)},${r.axes.Z[i].toFixed(5)}`);
+  });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([lines.join('\n')], {type:'text/csv'}));
+  a.download = 'ws300-yuksek-frekans-test-' + new Date().toISOString().slice(0,16).replace(/[:T]/g,'-') + '.csv';
+  a.click();
+}
+
+$('btnConnect').onclick = connect;
+$('btnBoth').onclick = ()=> run(['normal','high']);
+$('btnNoise').onclick = ()=> run(['noise']);
+$('btnCsv').onclick = downloadCsv;
+document.querySelectorAll('#axisTabs button').forEach(b=> b.onclick = ()=>{
+  curAxis = b.dataset.ax;
+  document.querySelectorAll('#axisTabs button').forEach(x=> x.classList.toggle('on', x === b));
+  render();
+});
+window.__test = { results, welchPsd, bandRms, bandMedianDensity, render, MODES };
+</script>
+</body>
+</html>

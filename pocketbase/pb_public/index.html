@@ -1151,6 +1151,15 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
 
   <div class="sub-page" data-sub="log" style="display:none">
     <div class="log" id="log"></div>
+    <div class="panel">
+      <div class="panel-title">Sensör bilgisi (yalnızca okuma)</div>
+      <div class="vp-note" style="margin-bottom:8px;">Sensörün ayar cevabını ve okunabilir tüm karakteristiklerini bayt bayt döker; sensöre hiçbir şey yazmaz. En az bir ölçüm aldıktan sonra basın (ayarın yazmadan önceki ve sonraki hâli de görünsün).</div>
+      <div class="report-btns" style="flex-direction:row;">
+        <button class="ghost" id="btnSensorInfo" type="button">Sensör bilgisini oku</button>
+        <button class="ghost" id="btnSensorInfoCopy" type="button">Kopyala</button>
+      </div>
+      <pre id="sensorInfoOut" style="white-space:pre-wrap; word-break:break-all; font-size:10.5px; line-height:1.45; color:var(--text-dim); background:var(--panel-2); border-radius:8px; padding:8px; max-height:420px; overflow:auto; margin:0 0 10px;"></pre>
+    </div>
   </div>
 </div>
 
@@ -1295,6 +1304,10 @@ const CHAR_MAP = {
 };
 
 const CONFIG_BYTES  = new Uint8Array([0,1,4,0,0,50,0,0]);
+// Yalnızca OKUMA amaçlı keşif için (Sensör bilgisi dökümü): 0x9082_9100–0x9082_9F00 ailesi + standart servisler.
+const SENSOR_EXTRA_SERVICES = Array.from({length:15}, (_,i)=> '9082' + (0x91 + i).toString(16) + '00' + BASE)
+  .filter(u=> ![SVC_CONFIG, SVC_TRIGGER, SVC_DATA].includes(u)).concat(['device_information', 'battery_service']);
+let lastConfigBefore = null, lastConfigAfter = null; // ayar karakteristiğinin ham cevabı (yazmadan önce / sonra)
 const TRIGGER_BYTES = new Uint8Array([1]);
 const SCALE_G_PER_LSB = 0.0006104; // g/bit, uygulamanın kendi server-upload JSON'undan doğrulandı
 // ÖRNEKLEME HIZI — sensör gerçek örnekleme hızını kendisi bildiriyor: config
@@ -3899,6 +3912,66 @@ document.getElementById('btnMeasure').addEventListener('click', async ()=>{
 document.getElementById('btnExport').addEventListener('click', exportCSV);
 document.getElementById('btnPdf').addEventListener('click', printReport);
 
+// ---- Sensör bilgisi dökümü (SADECE OKUMA) ----
+// Ayar komutunun (8 bayt) anlamını çözmek için: ayar karakteristiğinin ham cevabı bayt
+// bayt, olası uint16/uint32 yorumlarıyla; ayrıca sensördeki tüm okunabilir
+// karakteristikler. Sensöre hiçbir şey YAZILMAZ.
+function hexTable(u8){
+  if(!u8) return '(yok)';
+  const rows = [];
+  rows.push('hex : ' + Array.from(u8).map(b=>b.toString(16).padStart(2,'0')).join(' '));
+  rows.push('dec : ' + Array.from(u8).join(' '));
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const u16 = [];
+  for(let i=0;i+1<u8.length;i+=2) u16.push(`[${i}-${i+1}]=${dv.getUint16(i, true)}`);
+  rows.push('u16 LE (çift baytlar): ' + u16.join('  '));
+  const u16o = [];
+  for(let i=1;i+1<u8.length;i+=2) u16o.push(`[${i}-${i+1}]=${dv.getUint16(i, true)}`);
+  if(u16o.length) rows.push('u16 LE (tek baytlar): ' + u16o.join('  '));
+  const u32 = [];
+  for(let i=0;i+3<u8.length;i+=4) u32.push(`[${i}-${i+3}]=${dv.getUint32(i, true)}`);
+  if(u32.length) rows.push('u32 LE: ' + u32.join('  '));
+  const asc = Array.from(u8).map(b=> b >= 32 && b < 127 ? String.fromCharCode(b) : '.').join('');
+  rows.push('ascii: ' + asc);
+  return rows.join('\n');
+}
+async function dumpSensorInfo(){
+  const out = document.getElementById('sensorInfoOut');
+  if(!server || !server.connected){ out.textContent = 'Önce sensöre bağlanın.'; return; }
+  const lines = [];
+  const now = new Date();
+  lines.push(`WS300 sensör bilgisi — ${now.toLocaleString('tr-TR')} — cihaz: ${device && device.name || '?'}`);
+  lines.push(`Örnekleme hızı (araç): ${SAMPLE_RATE_HZ} Hz · ölçek: ${SCALE_G_PER_LSB} g/bit · son ölçüm örnek sayısı: ${axisSamples.X ? axisSamples.X.length : '—'}`);
+  lines.push(`Yazılan ayar komutu: ${Array.from(CONFIG_BYTES).join(',')}`);
+  lines.push('');
+  lines.push('== Ayar karakteristiği (90829501) — son ölçümde YAZMADAN ÖNCE ==');
+  lines.push(hexTable(lastConfigBefore));
+  lines.push('== Ayar karakteristiği — son ölçümde YAZDIKTAN SONRA ==');
+  lines.push(hexTable(lastConfigAfter));
+  lines.push('');
+  lines.push('== Tüm servisler ve okunabilir karakteristikler ==');
+  out.textContent = lines.join('\n') + '\n(okunuyor…)';
+  try{
+    const svcs = await server.getPrimaryServices();
+    for(const svc of svcs){
+      lines.push(`SERVİS ${svc.uuid}`);
+      let chars = [];
+      try{ chars = await svc.getCharacteristics(); }catch(e){ lines.push('  (karakteristikler okunamadı: ' + e.message + ')'); }
+      for(const ch of chars){
+        const p = ch.properties;
+        const props = ['read','write','writeWithoutResponse','notify','indicate'].filter(k=>p[k]).join(',');
+        lines.push(`  KAR ${ch.uuid}  [${props}]`);
+        if(p.read){
+          try{ const v = await ch.readValue(); lines.push(hexTable(new Uint8Array(v.buffer.slice(0))).split('\n').map(l=>'    '+l).join('\n')); }
+          catch(e){ lines.push('    (okunamadı: ' + e.message + ')'); }
+        }
+      }
+    }
+  }catch(e){ lines.push('(servisler listelenemedi: ' + e.message + ')'); }
+  out.textContent = lines.join('\n');
+  log('Sensör bilgisi okundu (Kayıt (Log) ekranında).');
+}
+
 async function connectDevice(){
   if(!navigator.bluetooth){
     log('Bu tarayıcı Web Bluetooth desteklemiyor. Chrome/Android kullanın.', 'err');
@@ -3913,7 +3986,9 @@ async function connectDevice(){
         { namePrefix: 'WS300' },
         { services: [SVC_DATA] }
       ],
-      optionalServices: [SVC_CONFIG, SVC_TRIGGER, SVC_DATA]
+      // Sensör bilgisi dökümü için: bilinen servislerin yanında aynı aileden olası diğer
+      // servisler ve standart cihaz bilgisi/pil servisleri (olmayan UUID zararsızdır).
+      optionalServices: [SVC_CONFIG, SVC_TRIGGER, SVC_DATA, ...SENSOR_EXTRA_SERVICES]
     });
     log(`Seçildi: ${device.name || '(isimsiz)'}`);
     device.addEventListener('gattserverdisconnected', onDisconnected);
@@ -4021,11 +4096,14 @@ async function runMeasurement(){
     setStatus('Config yazılıyor…', 'busy');
     const configSvc = await server.getPrimaryService(SVC_CONFIG);
     const configChar = await configSvc.getCharacteristic(CHR_CONFIG);
+    // Yazmadan önce sensörde kayıtlı ayarı oku (yalnızca okuma — 8 baytın anlamını çözmek için).
+    try{ lastConfigBefore = new Uint8Array((await configChar.readValue()).buffer.slice(0)); }catch(e){ lastConfigBefore = null; }
     await writeCharacteristic(configChar, CONFIG_BYTES);
     log('Config yazıldı: ' + bytesToHex(CONFIG_BYTES));
     // Sensörün bildirdiği gerçek örnekleme hızını oku (bkz. SAMPLE_RATE_HZ açıklaması).
     try{
       const cfgVal = await configChar.readValue();
+      lastConfigAfter = new Uint8Array(cfgVal.buffer.slice(0));
       const fsRead = parseSensorSampleRate(cfgVal);
       if(fsRead){ SAMPLE_RATE_HZ = fsRead; log('Sensör örnekleme hızı: ' + fsRead + ' Hz'); }
       else { SAMPLE_RATE_HZ = SAMPLE_RATE_DEFAULT_HZ; log('Örnekleme hızı okunamadı, varsayılan ' + SAMPLE_RATE_DEFAULT_HZ + ' Hz kullanılıyor (cevap: ' + bytesToHex(new Uint8Array(cfgVal.buffer)) + ')', 'warn'); }
@@ -7609,6 +7687,12 @@ document.querySelectorAll('#measMenu .menu-btn[data-sub]').forEach(b=>{
   b.addEventListener('click', ()=>{ pushNav(); showSub(b.dataset.sub); });
 });
 document.getElementById('btnSubBack').addEventListener('click', showMain);
+document.getElementById('btnSensorInfo').addEventListener('click', dumpSensorInfo);
+document.getElementById('btnSensorInfoCopy').addEventListener('click', async ()=>{
+  const t = document.getElementById('sensorInfoOut').textContent;
+  try{ await navigator.clipboard.writeText(t); log('Sensör bilgisi panoya kopyalandı.'); }
+  catch(e){ log('Kopyalanamadı — metni elle seçip kopyalayın.', 'warn'); }
+});
 
 // Eksen detayı sekmeleri — gizli sekmedeki grafik görünür olunca yeniden boyutlanır.
 let detailTab = 'vel';

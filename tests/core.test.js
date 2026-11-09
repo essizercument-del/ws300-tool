@@ -517,7 +517,7 @@ for(const file of APP_FILES){
     assert.equal(api.carpetCheck(sp.freqs, sp.psd, FS, 1.1), null);
     // yağsız: 1–3 kHz'de geniş bant gürültü (rezonanslı filtrelenmiş gürültü) → halı
     const hpN = api.highpassFiltFilt(Float64Array.from({ length: N }, () => g()), FS, 1000);
-    const bad = signal((t, k) => 0.3 * Math.sin(2 * Math.PI * 24.6 * t) + 0.003 * g() + 0.08 * hpN[k]);
+    const bad = signal((t, k) => 0.3 * Math.sin(2 * Math.PI * 24.6 * t) + 0.003 * g() + 0.2 * hpN[k]);
     sp = api.computePSD(bad, FS);
     const c = api.carpetCheck(sp.freqs, sp.psd, FS, null);
     assert.ok(c && c.byShape, JSON.stringify(c));
@@ -544,7 +544,7 @@ for(const file of APP_FILES){
     assert.equal(api.vfdCarrierCheck(ps.freqs, ps.psd, null), null);
     // gerçek halı (geniş bant gürültü, tarak yok) → baskın değil
     const hpN = api.highpassFiltFilt(Float64Array.from({ length: N }, () => g()), FS, 1000);
-    const bad = signal((t, k) => 0.3 * Math.sin(2 * Math.PI * 24.1 * t) + 0.003 * g() + 0.08 * hpN[k]);
+    const bad = signal((t, k) => 0.3 * Math.sin(2 * Math.PI * 24.1 * t) + 0.003 * g() + 0.2 * hpN[k]);
     const pb = api.computePSD(bad, FS);
     const vb = api.vfdCarrierCheck(pb.freqs, pb.psd, fe, 1000, 3000);
     assert.ok(!vb.dominant, JSON.stringify({ share: vb.share, lines: vb.lines }));

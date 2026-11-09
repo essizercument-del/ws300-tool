@@ -8284,7 +8284,26 @@ function buildStageSummaryPrintHtml(){
     <div style="font-size:10.5px; color:#888; margin-top:4px;">"Rulman frekansı kanıtı" yalnızca BPFO/BPFI/BSF tepelerinin PSD ve zarfta görülüp görülmediğine bakar (Genel Değerlendirme'deki Seviye 1–4). "Tahmini evre" buna ek olarak zaman dalgası (crest factor/kurtosis), yüksek frekans tabanı, yan bantlar, kafes frekansı, ISO bölgesi ve trendi birleştirir; bu yüzden ikisi farklı çıkabilir. Gerekçeler her eksenin "Zaman Dalga Formu" bölümündedir.</div>`;
 }
 
-async function buildRecentComparisonHtml(){
+// HTML raporda üst üste grafik resim değil gerçek grafik: yakınlaştırma, ölçüm aç/kapa,
+// dokunulan frekansta her ölçümün değeri. Yazdırma (PDF) yolunda resim kalır.
+function recentInteractiveData(ax, entries){
+  const off = RECENT_COLORS.length - entries.length;
+  const ds = entries.map((e,i)=>{
+    const s = e.spec && e.spec[ax];
+    if(!s || !s.f || !s.f.length) return null;
+    return { label: recentLabel(e), f: Array.from(s.f, x=>+(+x).toFixed(2)), v: Array.from(s.v, x=>+(+x).toPrecision(4)), color: RECENT_COLORS[i + off], last: i === entries.length-1 };
+  }).filter(Boolean);
+  return ds.length >= 2 ? ds : null;
+}
+function recentInteractiveBlock(ax, data){
+  const btn = (op, txt, w)=>`<button type="button" class="zoomBtn" data-ax="R${ax}" data-chart="recent" data-op="${op}" style="${w ? 'width:26px;' : 'padding:0 8px;'} height:24px; border:1px solid #bbb; border-radius:4px; background:#f7f7f7; cursor:pointer; font-size:${w ? 14 : 11}px; line-height:1;">${txt}</button>`;
+  return `<div style="display:flex; justify-content:flex-end; gap:4px; margin-bottom:4px;">${btn('out','−',1)}${btn('in','+',1)}${btn('reset','Sıfırla',0)}</div>
+      <div style="position:relative; height:260px;"><canvas class="chRecent" data-ax="R${ax}"></canvas></div>
+      <div class="rc-readout" data-ax="R${ax}" style="min-height:38px; margin-top:6px; padding:6px 10px; border-radius:6px; background:#fafafa; border:1px solid #e6e6e6; border-left:3px solid #e0a100; font-size:12.5px; line-height:1.55; color:#777;">Grafiğe dokun / üzerine gel: her ölçümün o frekanstaki değeri burada görünür. Üstteki tarihlere dokunarak bir ölçümü gizle/göster.</div>
+      <script type="application/json" class="recentData" data-ax="R${ax}">${JSON.stringify(data).replace(/</g,'\\u003c')}<\/script>`;
+}
+async function buildRecentComparisonHtml(opts){
+  const interactive = !!(opts && opts.interactive);
   const entries = recentReportEntries();
   if(entries.length < 2) return `<h2 style="font-size:15px; margin:20px 0 8px;">Son Ölçümler</h2><div style="font-size:12px; color:#777;">Bu nokta için karşılaştırılacak önceki ölçüm yok.</div>`;
   const td = 'padding:6px; border:1px solid #ccc; font-size:12px;';
@@ -8300,13 +8319,15 @@ async function buildRecentComparisonHtml(){
       <td style="${td}">${cfTxt(e)}</td><td style="${td}">${e.bfi != null ? e.bfi.toFixed(0) + '%' : '—'}</td></tr>`).join('');
   let charts = '';
   for(const ax of ['X','Y','Z']){
-    const img = await buildRecentOverlayImage(ax, entries);
+    const idata = interactive ? recentInteractiveData(ax, entries) : null;
+    const img = interactive ? null : await buildRecentOverlayImage(ax, entries);
     const txt = recentTrendText(ax, entries);
-    if(!img && !txt) continue;
+    if(!img && !idata && !txt) continue;
     charts += `<div style="margin-top:12px; page-break-inside:avoid;">
       <h3 style="font-size:13px; margin:8px 0 4px;">${ax} Ekseni — Hız Spektrumu, son ${entries.length} ölçüm üst üste</h3>
       ${txt ? `<div style="font-size:12px; margin-bottom:4px;">${txt}</div>` : ''}
       ${img ? `<img src="${img}" style="width:100%; max-width:700px; border:1px solid #ddd; border-radius:4px;">` : ''}
+      ${idata ? recentInteractiveBlock(ax, idata) : ''}
     </div>`;
   }
   return `<h2 style="font-size:15px; margin:20px 0 8px;">Son ${entries.length} Ölçüm Karşılaştırması</h2>
@@ -8514,7 +8535,7 @@ async function exportHtmlReport(){
   btn.textContent = 'Hazırlanıyor…';
   try{
     const axesData = {};
-    meta.recentHtml = buildStageSummaryPrintHtml() + await buildRecentComparisonHtml();
+    meta.recentHtml = buildStageSummaryPrintHtml() + await buildRecentComparisonHtml({interactive:true});
     for(const ax of ['X','Y','Z']){
       const spec = getSpec(ax);
       if(!spec) continue;
@@ -9328,6 +9349,54 @@ document.addEventListener('click', (e)=>{
   if(newMin<t.baseMin){ newMin=t.baseMin; newMax=newMin+newRange; }
   if(newMax>t.baseMax){ newMax=t.baseMax; newMin=newMax-newRange; }
   chart.options.scales.x.min=newMin; chart.options.scales.x.max=newMax; autoscaleYVisible(chart,newMin,newMax); chart.update('none');
+});
+
+// ---- Son ölçümler: üst üste hız spektrumu (gerçek grafik) ----
+function rcNearest(f, x){
+  var lo = 0, hi = f.length-1;
+  if(x <= f[0]) return 0; if(x >= f[hi]) return hi;
+  while(hi-lo > 1){ var m = (lo+hi)>>1; if(f[m] < x) lo = m; else hi = m; }
+  return (x - f[lo] < f[hi] - x) ? lo : hi;
+}
+function rcReadout(chart, key, x){
+  var el = document.querySelector('.rc-readout[data-ax="'+key+'"]');
+  chart.options.plugins.rvCursor = { x: x };
+  chart.update('none');
+  if(!el) return;
+  var fHead = x;
+  var rows = chart.data.datasets.map(function(ds, i){
+    if(!chart.isDatasetVisible(i)) return '';
+    // İmlecin ±4 piksel çevresindeki en büyük değer: parmakla dar bir tepeye tam denk
+    // gelmek zor; yakınlaştırdıkça pencere daralır.
+    var d = ds._rc, xs = chart.scales.x, hw = (xs.max - xs.min) / Math.max(1, xs.right - xs.left) * 4;
+    var k0 = rcNearest(d.f, x - hw), k1 = rcNearest(d.f, x + hw), v = 0, kb = k0;
+    for(var k = k0; k <= k1; k++) if(d.v[k] > v){ v = d.v[k]; kb = k; }
+    fHead = d.f[kb]; // başlıkta en yeni görünen ölçümün tepe frekansı
+    return '<span style="display:inline-block; margin-right:14px; white-space:nowrap;"><span style="display:inline-block; width:10px; height:10px; border-radius:2px; background:'+ds.borderColor+'; margin-right:5px; vertical-align:-1px;"></span>'+ds.label+': <b style="color:#222">'+v.toFixed(2)+' mm/s</b></span>';
+  }).join('');
+  var ord = (typeof REPORT_F1 === 'number' && REPORT_F1 > 0) ? ' <span style="color:#888">(≈'+(fHead/REPORT_F1).toFixed(2)+'×)</span>' : '';
+  el.style.color = '#333';
+  el.innerHTML = '<b>'+fHead.toFixed(1)+' Hz</b>'+ord+'<br>'+rows;
+}
+document.querySelectorAll('script.recentData').forEach(function(sc){
+  var key = sc.dataset.ax, data;
+  try{ data = JSON.parse(sc.textContent); }catch(e){ return; }
+  var canvas = document.querySelector('canvas.chRecent[data-ax="'+key+'"]');
+  if(!canvas || !data) return;
+  var opts = chartOptions('Hz','mm/s',false);
+  opts.scales.y.min = 0;
+  opts.scales.y.ticks.callback = function(v){ return String(+(+v).toFixed(2)); }; // "8.000" binlik gibi okunmasın
+  opts.plugins.legend = { display:true, labels:{ color:'#333', boxWidth:14, font:{size:11} } };
+  opts.plugins.tooltip = { enabled:false };
+  var fMax = 0;
+  var ds = data.map(function(d){ fMax = Math.max(fMax, d.f[d.f.length-1]); return { label:d.label, data:d.f.map(function(f,i){ return {x:f, y:d.v[i]}; }), borderColor:d.color, borderWidth: d.last ? 1.7 : 1.1, pointRadius:0, tension:0, _rc:d }; });
+  opts.scales.x.min = 0; opts.scales.x.max = fMax;
+  var chart = new Chart(canvas, { type:'line', data:{ datasets: ds }, options: opts });
+  chartRefs[key] = { recent: chart };
+  attachZoomPan({current: chart}, canvas, 0, fMax);
+  function xAt(clientX){ var rect = canvas.getBoundingClientRect(); return chart.scales.x.getValueForPixel(clientX - rect.left); }
+  canvas.addEventListener('charttap', function(e){ var x = xAt(e.detail.clientX), xs = chart.scales.x; if(isFinite(x) && x >= xs.min && x <= xs.max) rcReadout(chart, key, x); });
+  canvas.addEventListener('mousemove', function(e){ if(e.buttons) return; var x = xAt(e.clientX), xs = chart.scales.x; if(isFinite(x) && x >= xs.min && x <= xs.max) rcReadout(chart, key, x); });
 });
 
 renderAxis('${axesPresent[0] || 'X'}');

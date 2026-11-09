@@ -5262,6 +5262,11 @@ async function ensureHistoricalEnvelope(doc){
     const s = raw.axes[ax];
     if(!s || !s.length) return;
     const {freqs, psd} = computePSD(s, raw.fs);
+    // Rulman analizi için tam çözünürlüklü PSD (≈0.4 Hz). Kayıtlı accelPSD 640 noktaya
+    // 'max' ile indirgenmiş (≈5 Hz adım) — o çözünürlükte ±%1.5 eşleştirme fazla gevşek
+    // kalıyor ve canlı ölçümde görülmeyen harmonik eşleşmeleri üretiyordu.
+    if(!doc._psdFull) doc._psdFull = {};
+    doc._psdFull[ax] = { f: freqs, v: psd };
     const opts = envOptsFor(estimateDriveFe(normalizePsdForAnalysis(freqs, psd), shaft, bF), bF);
     const {freqs: ef, amp} = envelopeSpectrum(s, raw.fs, ENV_DEFAULT_F_LOW, ENV_DEFAULT_F_HIGH, opts);
     const d = downsampleSpectrum(ef, amp, 200, 0, ENV_SPEC_F_MAX, 'max');
@@ -7374,6 +7379,24 @@ function findStrongPeaks(norm, gate, count, fMin){
 // Ör. 63xx serisinde BPFO ≈ 3.04–3.10×, BPFI ≈ 4.9× → 3× ve 5× devirle neredeyse çakışır;
 // devir tahminindeki küçük bir hata mekanik harmoniği rulman arızası gibi gösterebilir.
 const ORDER_OVERLAP_PCT = 0.05;
+// PSD'de tek başına Seviye 3 vermeye yetecek eşleşmeler: en düşük harmonik devir katına
+// (n×, ±%5) yakın değilse o, ve onun gerçekten katı olan (h·f1 ± max(2·df, %0.5)) tepeler.
+// Devir katına yakın bir 1× tepe mekanik harmonik de olabilir; yanında 1.25% kaymış bir
+// "3×" ile birlikte rulmanı "güçlü şüphe"ye taşımamalı — bunun için Zarf teyidi gerekir.
+function strongPsdMatches(p, shaftHz, df){
+  if(!p || !p.length) return [];
+  const nearOrder = (c)=>{
+    if(!shaftHz) return false;
+    const n = Math.round(c.target/shaftHz);
+    return n >= 1 && n <= 10 && Math.abs(c.target - n*shaftHz) <= ORDER_OVERLAP_PCT*c.target;
+  };
+  const base = p.slice().sort((a,b)=>a.h-b.h)[0];
+  const f1 = base.freq/base.h;
+  const tolOf = (c)=> Math.max(2*(df || 0), 0.005*c.freq);
+  // Devir katı kontrolü yalnızca en düşük harmonikte (orderOverlapNotes ile aynı ölçüt):
+  // yüksek harmoniklerde devir katları sık, ±%5 neredeyse her yeri kapsar.
+  return p.filter(c=> c === base ? !nearOrder(c) : Math.abs(c.freq - c.h*f1) <= tolOf(c));
+}
 function orderOverlapNotes(perKey, shaftHz, nominalHz, bFreqs){
   const out = [];
   if(!shaftHz || !nominalHz || !bFreqs) return out;
@@ -7453,16 +7476,19 @@ function analyzeBearing(psdF, psdV, envPts, bFreqs, ctx){
   const env = run(envNorm, ENV_MAX_HARMONIC, ENV_SPEC_F_MAX, ENV_PEAK_GATE, ENV_MIN_HZ);
 
   const zoneHigh = ctx.zone === 'C' || ctx.zone === 'D';
+  const psdDf = psdF && psdF.length > 1 ? (psdF[psdF.length-1] - psdF[0])/(psdF.length-1) : 0;
   const perKey = keys.map(key=>{
     let p = psd ? psd.accepted.filter(c=>c.key===key).sort((a,b)=>a.h-b.h) : [];
     const e = env ? env.accepted.filter(c=>c.key===key).sort((a,b)=>a.h-b.h) : [];
     // PSD'de 4×–5× tek başına sayılmaz: 1×–3× bir eşleşme ya da Zarf teyidi şart.
     if(!p.some(c=>c.h <= PSD_ANCHOR_HARMONIC) && !e.length) p = [];
-    let level = 1, strongBlocked = false;
+    let level = 1, strongBlocked = false, weakHarmonics = false;
     if(p.length || e.length){
       level = 2;
       const both = p.length >= 1 && e.length >= 1;
-      const strongRaw = p.length >= 2 || e.length >= 2;
+      const pStrong = strongPsdMatches(p, shaftHz, psdDf);
+      const strongRaw = pStrong.length >= 2 || e.length >= 2;
+      if(p.length >= 2 && pStrong.length < 2 && e.length < 2 && !both) weakHarmonics = true;
       // Devir ölçümden doğrulanmadıysa (dar eşleştirme yapılamadıysa) tek yöntemle Seviye 3 verilmez.
       const strong = strongRaw && estimated;
       if(strongRaw && !estimated && !both) strongBlocked = true;
@@ -7470,7 +7496,7 @@ function analyzeBearing(psdF, psdV, envPts, bFreqs, ctx){
       else if(both || strong){ level = 3; }
       if(level === 3 && both && (zoneHigh || ctx.worsening)) level = 4;
     }
-    return { key, name:FAULT_NAMES[key], psd:p, env:e, level, strongBlocked };
+    return { key, name:FAULT_NAMES[key], psd:p, env:e, level, strongBlocked, weakHarmonics };
   });
 
   const ranked = perKey.slice().sort((a,b)=> (b.level - a.level) || ((b.psd.length+b.env.length) - (a.psd.length+a.env.length)));
@@ -7501,6 +7527,9 @@ function analyzeBearing(psdF, psdV, envPts, bFreqs, ctx){
       if(k.env.length) parts.push('Zarf '+fmtList(k.env));
       reasons.push(`Ayrıca ${k.key}: ${parts.join('; ')} (Seviye ${k.level}).`);
     });
+  }
+  if(top && top.weakHarmonics && top.level === 2){
+    notes.push('PSD\'de birden fazla harmonik denk geldi, ancak biri devir katına çok yakın ya da harmonikler aynı temel frekansın tam katı değil; bu yüzden tek başına Seviye 3 verilmedi. Zarf teyidi gelirse ya da harmonikler tutarlı hale gelirse seviye yükselir.');
   }
   if(top && top.strongBlocked){
     notes.push('Aynı yöntemde birden fazla harmonik görüldü, ancak devir ölçümden doğrulanamadığı için Seviye 3 verilmedi; ikinci yöntemin (PSD/Zarf) teyidi veya devrin doğrulandığı yeni bir ölçüm gerekir.');
@@ -7947,7 +7976,8 @@ function historicalReportSpec(doc, ax){
   const vel = doc.velSpectrum[ax], psd = doc.accelPSD[ax];
   const rms = doc.velRMS ? doc.velRMS[ax] : null;
   if(rms == null || !vel.f || !vel.f.length) return null;
-  return { velF: vel.f, velV: vel.v, psdF: psd.f, psdV: psd.v, rmsVelocity: rms };
+  const full = doc._psdFull && doc._psdFull[ax];
+  return { velF: vel.f, velV: vel.v, psdF: full ? full.f : psd.f, psdV: full ? full.v : psd.v, rmsVelocity: rms };
 }
 
 // Zarf spektrumu için aynı canlı/geçmiş adaptör deseni. PDF'te tutarlılık için

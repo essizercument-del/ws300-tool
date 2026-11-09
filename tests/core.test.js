@@ -32,7 +32,7 @@ for(const file of APP_FILES){
       'SKI_BLOCK_S', 'SKI_DRIFT_RATIO', 'SKI_DRIFT_MIN_G', 'SKI_BAND', 'SKI_VEL_RATIO', 'SKI_VEL_MIN', 'skiSlopeCheck',
       'TWF_HP_HZ', 'TWF_EDGE_FRAC', 'TWF_MIN_RMS_G', 'CF_WARN', 'CF_HIGH', 'KURT_WARN', 'KURT_HIGH', 'biquadHighpass', 'biquadRun', 'highpassFiltFilt', 'twfStatsOf', 'computeTwfStats', 'twfVerdict', 'evaluateCfTrend',
       'ELEC_PEAK_GATE', 'ELEC_SHARE_MIN', 'localPeak', 'localFloor', 'electricalCheck', 'SB_GATE', 'sidebandCheck', 'CARPET_TREND', 'CARPET_SHAPE', 'CARPET_MIN_PSD', 'bandMedian', 'carpetCheck', 'VFD_COMB_SHARE', 'VFD_MIN_LINES', 'VFD_LINE_GATE', 'vfdCarrierCheck', 'velLineSpectrum', 'downsampleSpectrum', 'VEL_SPEC_MODE', 'fixDocVelSpectrum', 'SAMPLE_RATE_DEFAULT_HZ', 'VEL_F_LOW', 'twfSummaryOf', 'evaluateImpactTrend', 'SUB_ENERGY_SHARE', 'SUB_MIN_MMS', 'SUB_NARROW_HZ', 'subSyncCheck',
-      'assessSignalQuality', 'medianOfNums', 'ENV_LINE_GATE', 'ENV_LINE_FLOOR_HZ', 'ENV_LINE_MAX_HALF_HZ', 'suppressDriveLines', 'envOptsFor', 'shaftScale', 'effectiveShaftHz', 'decodeRawBuffer'],
+      'assessSignalQuality', 'medianOfNums', 'ENV_LINE_GATE', 'ENV_LINE_FLOOR_HZ', 'ENV_LINE_MAX_HALF_HZ', 'suppressDriveLines', 'envOptsFor', 'shaftScale', 'effectiveShaftHz', 'decodeRawBuffer', 'strongPsdMatches'],
     regions: [['const MAINS_HZ', 'analyzeBearing']],
   });
 
@@ -167,6 +167,20 @@ for(const file of APP_FILES){
     assert.match(run(q((k) => 41000 * Math.sin(2 * Math.PI * 25 * k / FS))).join(), /doygun/);
     assert.match(run(q(() => 1638)).join(), /sinyal yok/);
     assert.match(run(q((k) => (k > 5000 && k < 5200) ? 777 : 30 * g())).join(), /takılma/);
+  });
+
+  test(`${file}: PSD'de tek başına Seviye 3 — devir katına yakın / tutarsız harmonik yetmez`, () => {
+    const shaft = 24.05; // 332/3B, 09:44 kaydı
+    const c = (h, target, freq) => ({ key: 'BPFO', h, target, freq });
+    // 1× 74.2 Hz 3× devire (72.2) %3 yakın; 3× 226.2 Hz ise 3·74.2=222.6'dan 3.6 Hz kaçık
+    const reportCase = [c(1, 74.5, 74.2), c(3, 223.4, 226.2)];
+    assert.ok(api.strongPsdMatches(reportCase, shaft, 0.4).length < 2, 'rapordaki eşleşmeler Seviye 3 için yetmemeli');
+    assert.ok(api.strongPsdMatches(reportCase, shaft, 5.1).length < 2, 'kaba (kayıtlı) çözünürlükte de');
+    // Devir katından uzak, tam katlı harmonikler: güçlü sayılır
+    const real = [c(1, 87.3, 87.4), c(2, 174.6, 174.8)];
+    assert.equal(api.strongPsdMatches(real, 24.15, 0.4).length, 2);
+    // Devir katından uzak ama 2× tutarsız (1.5 Hz kaçık, df 0.4): güçlü sayılmaz
+    assert.equal(api.strongPsdMatches([c(1, 87.3, 87.4), c(2, 174.6, 176.3)], 24.15, 0.4).length, 1);
   });
 
   test(`${file}: rulman analizi gürültüde sessiz, BPFO arızasını buluyor`, () => {

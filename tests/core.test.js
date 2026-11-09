@@ -31,7 +31,7 @@ for(const file of APP_FILES){
       'Q_CLIP_LSB', 'Q_CLIP_MIN_COUNT', 'Q_FLAT_STD_LSB', 'Q_STUCK_RUN', 'Q_SPIKE_LSB', 'Q_LEN_MISMATCH',
       'SKI_BLOCK_S', 'SKI_DRIFT_RATIO', 'SKI_DRIFT_MIN_G', 'SKI_BAND', 'SKI_VEL_RATIO', 'SKI_VEL_MIN', 'skiSlopeCheck',
       'TWF_HP_HZ', 'TWF_EDGE_FRAC', 'TWF_MIN_RMS_G', 'CF_WARN', 'CF_HIGH', 'KURT_WARN', 'KURT_HIGH', 'biquadHighpass', 'biquadRun', 'highpassFiltFilt', 'twfStatsOf', 'computeTwfStats', 'twfVerdict', 'evaluateCfTrend',
-      'ELEC_PEAK_GATE', 'ELEC_SHARE_MIN', 'localPeak', 'localFloor', 'electricalCheck', 'SB_GATE', 'sidebandCheck', 'CARPET_TREND', 'CARPET_SHAPE', 'CARPET_MIN_PSD', 'bandMedian', 'carpetCheck', 'velLineSpectrum', 'downsampleSpectrum', 'VEL_SPEC_MODE', 'fixDocVelSpectrum', 'SAMPLE_RATE_DEFAULT_HZ', 'VEL_F_LOW', 'twfSummaryOf', 'evaluateImpactTrend', 'SUB_ENERGY_SHARE', 'SUB_MIN_MMS', 'SUB_NARROW_HZ', 'subSyncCheck',
+      'ELEC_PEAK_GATE', 'ELEC_SHARE_MIN', 'localPeak', 'localFloor', 'electricalCheck', 'SB_GATE', 'sidebandCheck', 'CARPET_TREND', 'CARPET_SHAPE', 'CARPET_MIN_PSD', 'bandMedian', 'carpetCheck', 'VFD_COMB_SHARE', 'VFD_MIN_LINES', 'VFD_LINE_GATE', 'vfdCarrierCheck', 'velLineSpectrum', 'downsampleSpectrum', 'VEL_SPEC_MODE', 'fixDocVelSpectrum', 'SAMPLE_RATE_DEFAULT_HZ', 'VEL_F_LOW', 'twfSummaryOf', 'evaluateImpactTrend', 'SUB_ENERGY_SHARE', 'SUB_MIN_MMS', 'SUB_NARROW_HZ', 'subSyncCheck',
       'assessSignalQuality', 'medianOfNums', 'ENV_LINE_GATE', 'ENV_LINE_FLOOR_HZ', 'ENV_LINE_MAX_HALF_HZ', 'suppressDriveLines', 'envOptsFor', 'shaftScale', 'effectiveShaftHz', 'decodeRawBuffer'],
     regions: [['const MAINS_HZ', 'analyzeBearing']],
   });
@@ -525,5 +525,30 @@ for(const file of APP_FILES){
     const t = api.carpetCheck(null, null, FS, 2.5);
     assert.ok(t && t.byTrend && !t.byShape);
     assert.equal(api.carpetCheck(null, null, FS, 1.4), null);
+  });
+
+  test(`${file}: sürücü taşıyıcı tarağı halı sanılmıyor`, () => {
+    const g = rng(91);
+    const fe = 48.33, sp = 2 * fe, fc = 2097.8;
+    // taşıyıcı ve 2·fe aralıklı yan çizgiler + biraz geniş bant + 1×
+    const amps = { 0: 0.9, 1: 0.45, '-1': 0.3, 2: 0.2, '-2': 0.15, 3: 0.1, '-3': 0.08 };
+    const x = signal((t) => 0.3 * Math.sin(2 * Math.PI * 24.1 * t) + 0.004 * g() +
+      Object.entries(amps).reduce((a, [k, A]) => a + A * Math.sin(2 * Math.PI * (fc + Number(k) * sp) * t + Number(k)), 0));
+    const ps = api.computePSD(x, FS);
+    const v = api.vfdCarrierCheck(ps.freqs, ps.psd, fe, 1000, 3000);
+    assert.ok(v && v.dominant, JSON.stringify(v && { share: v.share, lines: v.lines }));
+    assert.ok(Math.abs(v.fc - fc) < 1);
+    // trend ölçütü sürücü baskınken kullanılmaz; çizgiler çıkarılınca taban normal → halı yok
+    assert.equal(api.carpetCheck(ps.freqs, ps.psd, FS, 3.0, v), null);
+    // sürücü bilgisi yoksa (fe yok) kontrol yapılmaz
+    assert.equal(api.vfdCarrierCheck(ps.freqs, ps.psd, null), null);
+    // gerçek halı (geniş bant gürültü, tarak yok) → baskın değil
+    const hpN = api.highpassFiltFilt(Float64Array.from({ length: N }, () => g()), FS, 1000);
+    const bad = signal((t, k) => 0.3 * Math.sin(2 * Math.PI * 24.1 * t) + 0.003 * g() + 0.08 * hpN[k]);
+    const pb = api.computePSD(bad, FS);
+    const vb = api.vfdCarrierCheck(pb.freqs, pb.psd, fe, 1000, 3000);
+    assert.ok(!vb.dominant, JSON.stringify({ share: vb.share, lines: vb.lines }));
+    const cb = api.carpetCheck(pb.freqs, pb.psd, FS, null, vb);
+    assert.ok(cb && cb.byShape && !cb.vfd);
   });
 }

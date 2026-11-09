@@ -5446,8 +5446,9 @@ function buildCarpetHtml(ax){
   const c = liveCarpet(ax);
   if(!c) return '<div style="margin-top:8px; color:var(--text-dim)">Halı tipi taban yükselmesi yok (1–3 kHz tabanı normal).</div>';
   const st = estimateStage(ax);
-  return `<div style="margin-top:10px; font-weight:600; color:var(--amber)">Halı tipi taban — yağ filmi yok/yetersiz</div>` + bulletList(carpetBullets(c, st && st.defectEvidence));
+  return `<div style="margin-top:10px; font-weight:600; color:var(--amber)">${carpetTitle(c)}</div>` + bulletList(carpetBullets(c, st && st.defectEvidence));
 }
+function carpetTitle(c){ return c && c.vfd ? 'Yüksek frekans tabanı yüksek — sürücü gürültüsü mü yağlama mı belirsiz' : 'Halı tipi taban — yağ filmi yok/yetersiz'; }
 function buildSidebandHtml(ax){
   const sb = liveSidebands(ax);
   if(!sb) return '<div style="color:var(--text-dim)">Yan bant kontrolü için rulman kodu ve RPM gerekli.</div>';
@@ -5516,23 +5517,87 @@ function hpRmsBaseline(ax){
 const CARPET_TREND = 2;
 const CARPET_SHAPE = 2;
 const CARPET_MIN_PSD = 1e-7;    // g²/Hz (≈0.3 mg/√Hz) — bunun altı sensör gürültüsü sayılır
-function bandMedian(freqs, psd, lo, hi){
+function bandMedian(freqs, psd, lo, hi, exclude){
   const v = [];
-  for(let k=0;k<freqs.length;k++){ const f = freqs[k]; if(f >= lo && f <= hi && psd[k] > 0) v.push(psd[k]); }
+  for(let k=0;k<freqs.length;k++){ const f = freqs[k]; if(f >= lo && f <= hi && psd[k] > 0 && !(exclude && exclude[k])) v.push(psd[k]); }
   return v.length ? medianOf(v) : null;
 }
+
+// ============================================================
+// SÜRÜCÜ (VFD) TAŞIYICI GÜRÜLTÜSÜ — 1–3 kHz bandında
+// PWM anahtarlaması motor sargısında manyetik kuvvet üretir; spektrumda taşıyıcı
+// frekansı (ya da katı) etrafında 2×fe aralıklı bir çizgi ailesi ("tarak") olarak
+// görünür ve çoğu zaman bandın enerjisine hakim olur. Bu rulmandan gelmez: halı
+// tipi taban, 1–3 kHz RMS artışı ve bu banttan hesaplanan crest factor/kurtosis
+// bu durumda rulman bulgusu olarak okunmamalıdır.
+// Yöntem: bandın en güçlü tepesi fc; fc ± k·2fe (|k| ≤ 15) çevresindeki güç payı
+// (share) ve tarağın gerçekten var olduğu (en az VFD_MIN_LINES yan çizgi) kontrol edilir.
+// ============================================================
+const VFD_COMB_SHARE = 0.3;
+const VFD_MIN_LINES = 2;
+const VFD_LINE_GATE = 20;   // yan çizgi: bandın ortanca yoğunluğunun bu katı
+function vfdCarrierCheck(freqs, psd, fe, lo, hi){
+  if(!freqs || !psd || !(fe > 0)) return null;
+  lo = lo || 1000; hi = hi || 3000;
+  const df = freqs[1]-freqs[0];
+  let bandE = 0, kMax = -1;
+  const inBand = [];
+  for(let k=0;k<freqs.length;k++){
+    if(freqs[k] < lo || freqs[k] > hi) continue;
+    bandE += psd[k]*df; inBand.push(psd[k]);
+    if(kMax < 0 || psd[k] > psd[kMax]) kMax = k;
+  }
+  if(!(bandE > 0) || kMax < 0) return null;
+  const med = medianOf(inBand);
+  const fc = freqs[kMax], sp = 2*fe, hw = Math.max(1.5, 3*df);
+  const mask = new Uint8Array(freqs.length);
+  let comb = 0, lines = 0;
+  for(let j=-15;j<=15;j++){
+    const c = fc + j*sp;
+    if(c < lo || c > hi) continue;
+    let pk = 0;
+    const k0 = Math.max(0, Math.floor((c-hw)/df)), k1 = Math.min(freqs.length-1, Math.ceil((c+hw)/df));
+    for(let k=k0;k<=k1;k++){ if(!mask[k]){ mask[k] = 1; comb += psd[k]*df; } if(psd[k] > pk) pk = psd[k]; }
+    if(j !== 0 && med > 0 && pk >= VFD_LINE_GATE*med) lines++;
+  }
+  const share = comb/bandE;
+  return { fc, spacing: sp, share, lines, dominant: share >= VFD_COMB_SHARE && lines >= VFD_MIN_LINES, mask };
+}
+function liveVfd(ax){
+  const sp = axisSpectra[ax];
+  if(!sp) return null;
+  const x = axisExtraDiag(ax);
+  if(!x) return null;
+  // fe: sürücü izi zaten bulunduysa o; bulunmadıysa rulman frekansı dışlaması olmadan yeniden
+  // aranır (ör. 4 kutuplu motorda fe ≈ BSF olduğu için sürücü izi reddedilmiş olabilir). Rulman
+  // darbe tarağıyla karışmaması için ek şart: bandın sinyali darbeli değil, düzenli olmalı
+  // (kurtosis < KURT_HIGH) — taşıyıcı sürekli bir dalgadır, rulman darbesi kurtosis'i yükseltir.
+  let fe = x.lfDrive ? x.lf : null;
+  if(!fe){
+    const h = sp.twf && sp.twf.hp;
+    if(!h || !(h.kurt < KURT_HIGH)) return null;
+    fe = estimateDriveFe(normalizePsdForAnalysis(sp.freqs, sp.psd), x.shaftHz, null);
+  }
+  if(!fe) return null;
+  return vfdCarrierCheck(sp.freqs, sp.psd, fe, 1000, Math.min(3000, SAMPLE_RATE_HZ/2*0.95));
+}
+
 // freqs/psd: tam çözünürlüklü PSD (ya da null); ratio: 1–3 kHz RMS / ilk ölçümler (ya da null)
-function carpetCheck(freqs, psd, fs, ratio){
+// vfd: vfdCarrierCheck sonucu — baskınsa taraktaki çizgiler taban hesabından çıkarılır ve
+// 1–3 kHz RMS trendi (taşıyıcı enerjisi yükle değişir) halı ölçütü olarak kullanılmaz.
+function carpetCheck(freqs, psd, fs, ratio, vfd){
   let hf = null, mf = null, shape = null;
+  const vd = vfd && vfd.dominant;
+  if(vd) ratio = null;
   if(freqs && psd){
-    hf = bandMedian(freqs, psd, 1000, Math.min(3000, fs/2*0.95));
+    hf = bandMedian(freqs, psd, 1000, Math.min(3000, fs/2*0.95), vd ? vfd.mask : null);
     mf = bandMedian(freqs, psd, 300, 800);
     shape = (hf && mf) ? hf/mf : null;
   }
   const byTrend = ratio != null && ratio >= CARPET_TREND;
   const byShape = shape != null && shape >= CARPET_SHAPE && hf >= CARPET_MIN_PSD;
   if(!byTrend && !byShape) return null;
-  return { byTrend, byShape, ratio, shape, hfDensity: hf != null ? Math.sqrt(hf)*1000 : null }; // mg/√Hz
+  return { byTrend, byShape, ratio, shape, hfDensity: hf != null ? Math.sqrt(hf)*1000 : null, vfd: vd ? vfd : null }; // mg/√Hz
 }
 // Canlı eksen için (rapor ve tanı ekranları).
 function liveCarpet(ax){
@@ -5540,14 +5605,23 @@ function liveCarpet(ax){
   if(!sp) return null;
   const h = sp.twf && sp.twf.hp;
   const base = hpRmsBaseline(ax);
-  return carpetCheck(sp.freqs, sp.psd, SAMPLE_RATE_HZ, (h && base) ? h.rms/base : null);
+  return carpetCheck(sp.freqs, sp.psd, SAMPLE_RATE_HZ, (h && base) ? h.rms/base : null, liveVfd(ax));
+}
+function vfdBullets(v){
+  return [
+    `1–3 kHz bandındaki enerjinin %${Math.round(v.share*100)}'i sürücü taşıyıcı çizgilerinde: ≈${v.fc.toFixed(0)} Hz çevresinde ${v.spacing.toFixed(1)} Hz (2×fe) aralıklı çizgi ailesi.`,
+    'Kaynağı rulman değil: sürücünün PWM anahtarlaması motor sargısında manyetik titreşim üretir. Tek başına arıza değildir.',
+    'Etkisi: bu bandın seviyesi, crest factor/kurtosis ve halı kontrolü taşıyıcı tarafından bastırılır ya da şişirilir. Bu eksende rulman değerlendirmesi zarf ve PSD arıza frekanslarına dayanır, 1–3 kHz göstergelerine dayanmaz.',
+    'Doğrulama: motor sürücüsüz (şebekeden ya da bypass ile) ya da farklı taşıyıcı frekansında çalıştırılabiliyorsa bu çizgi ailesi kaybolur/yer değiştirir.'
+  ];
 }
 function carpetBullets(c, withDefect){
   const b = [];
   if(c.byTrend) b.push(`1–3 kHz bandındaki titreşim tabanı bu noktanın ilk ölçümlerine göre ${c.ratio.toFixed(1)} kat yükselmiş.`);
-  if(c.byShape) b.push(`1–3 kHz PSD tabanı (${c.hfDensity.toFixed(2)} mg/√Hz) 300–800 Hz tabanının ${c.shape.toFixed(1)} katı — yüksek frekansta geniş bir "halı".`);
+  if(c.byShape) b.push(`1–3 kHz PSD tabanı (${c.hfDensity.toFixed(2)} mg/√Hz) 300–800 Hz tabanının ${c.shape.toFixed(1)} katı — yüksek frekansta geniş bir "halı".${c.vfd ? ' (Sürücü taşıyıcı çizgileri hesaptan çıkarıldı.)' : ''}`);
+  if(c.vfd) b.push('<b>Dikkat: bu bantta sürücü (VFD) taşıyıcı gürültüsü baskın.</b> PWM\'in yaydığı geniş bant gürültü de tabanı yükseltebilir; halının yağlamadan mı sürücüden mi geldiği bu ölçümle kesin ayrılamaz. Yağlama sonrası taban değişmiyorsa kaynak büyük ihtimalle sürücüdür.');
   b.push('Anlamı: bilye ile bilezik arasındaki yağ filmi kalmamış ya da yetersiz (metal-metal sürtünme). Tekil sivri tepelerden ("çim") farklı olarak tabanın tamamı yükselir.');
-  if(withDefect) b.push('<b>Arıza frekansları/darbe bulgusuyla birlikte görüldüğü için ileri evre aşınma olasılığı yüksek.</b>');
+  if(withDefect && !c.vfd) b.push('<b>Arıza frekansları/darbe bulgusuyla birlikte görüldüğü için ileri evre aşınma olasılığı yüksek.</b>');
   b.push('Yapılacak: rulmanı yağlayıp aynı noktadan tekrar ölçün. Taban düşerse sorun yağlamaydı; düşmüyorsa ya da kısa sürede geri yükseliyorsa yüzey aşınması ilerlemiştir (ileri evre).');
   return b;
 }
@@ -5569,9 +5643,12 @@ function estimateStage(ax){
   const envHit = keys.filter(k=>k.env.length).map(k=>k.key);
   const twfL = x.twfV ? x.twfV.level : 0;
   const h = x.twf && x.twf.hp;
-  const tr = evaluateCfTrend(cfSeries(ax));
+  const vfd = liveVfd(ax);
+  const vfdDom = !!(vfd && vfd.dominant);
+  // Taşıyıcı 1–3 kHz bandına hakimse o bandın RMS'i ve CF trendi rulmanı değil sürücüyü gösterir.
+  const tr = vfdDom ? null : evaluateCfTrend(cfSeries(ax));
   const base = hpRmsBaseline(ax);
-  const ratio = (h && base) ? h.rms/base : null;
+  const ratio = (!vfdDom && h && base) ? h.rms/base : null;
   const cls = selTag ? isoClass(selTag.kw, selTag.foundation) : null;
   const zone = (isoEvaluate(x.ovl, cls) || {}).zone;
   const zoneHigh = zone === 'C' || zone === 'D';
@@ -5587,13 +5664,17 @@ function estimateStage(ax){
   if(sb && sb.bsf) r.push('BSF tepesinde ±FTF yan bantları.');
   if(ftfSub) r.push('Kafes (FTF) frekansında tepe.');
   if(zoneHigh) r.push(`Genel hız Zone ${zone}.`);
-  const carpet = liveCarpet(ax);
-  const defectEvidence = !!(psdHit.length || envHit.length || twfL >= 1 || ftfSub || (sb && (sb.bpfi || sb.bsf)));
+  const carpetAll = liveCarpet(ax);
+  // Sürücü gürültüsüyle karışık halı evre kararına girmez (yalnızca ayrı bulgu olarak gösterilir).
+  const carpet = carpetAll && !carpetAll.vfd ? carpetAll : null;
+  const twfLe = vfdDom ? 0 : twfL;
+  const defectEvidence = !!(psdHit.length || envHit.length || twfLe >= 1 || ftfSub || (sb && (sb.bpfi || sb.bsf)));
   if(carpet) r.push('Yüksek frekansta halı tipi taban yükselmesi (yağ filmi yok/yetersiz).');
+  if(vfdDom) r.push(`1–3 kHz bandına sürücü (VFD) taşıyıcı gürültüsü hakim (%${Math.round(vfd.share*100)}) — o banttaki göstergeler (halı, crest factor, seviye artışı) evre kararında kullanılmadı.`);
   let stage = 1;
   if((tr && tr.kind === 'falling') || (zoneHigh && ratio >= 3 && h && h.cf < CF_WARN && (envHit.length || psdHit.length || ftfSub)) || (ftfSub && psdHit.length) || (carpet && defectEvidence && (psdHit.length || zoneHigh))) stage = 4;
-  else if(psdHit.length && (envHit.length || twfL >= 1 || (sb && (sb.bpfi || sb.bsf)) || (res && res.level >= 3))) stage = 3;
-  else if(envHit.length || psdHit.length || twfL >= 1 || (tr && tr.kind === 'rising') || (ratio != null && ratio >= 1.5) || carpet) stage = 2;
+  else if(psdHit.length && (envHit.length || twfLe >= 1 || (sb && (sb.bpfi || sb.bsf)) || (res && res.level >= 3))) stage = 3;
+  else if(envHit.length || psdHit.length || twfLe >= 1 || (tr && tr.kind === 'rising') || (ratio != null && ratio >= 1.5) || carpet) stage = 2;
   const caveats = [];
   if(!res) caveats.push(x.rpm ? 'Rulman kodu girilmemiş/tabloda yok: yalnızca zaman dalgası ve trende göre tahmin edildi.' : 'RPM girilmemiş: yalnızca zaman dalgasına göre tahmin edildi.');
   if(base == null) caveats.push('Karşılaştırılacak eski ölçüm yok: taban yükselmesi ve CF trendi değerlendirilemedi.');
@@ -5601,7 +5682,7 @@ function estimateStage(ax){
   let action = STAGE_ACTIONS[stage];
   // Halı var ama arıza kanıtı yok: önce yağlama — ileri evreye ancak yağlamadan sonra karar verilir.
   if(carpet && !defectEvidence && stage <= 2) action = 'Önce rulmanı yağlayıp tekrar ölçün: taban düşerse sorun yağlamaydı; düşmüyorsa ileri evre aşınmadır.';
-  return { stage, label: STAGE_LABELS[stage] + (carpet && !defectEvidence && stage <= 2 ? ' / yağlama yetersiz' : ''), action, reasons: r, caveats, carpet, defectEvidence };
+  return { stage, label: STAGE_LABELS[stage] + (carpet && !defectEvidence && stage <= 2 ? ' / yağlama yetersiz' : ''), action, reasons: r, caveats, carpet: carpetAll, defectEvidence, vfd: vfdDom ? vfd : null };
 }
 
 // Eksen başına bulgular: [{level 0|1|2, title, text}]
@@ -5620,8 +5701,13 @@ function extraFindings(ax){
     out.push({ level:2, title:'Ski-slope / oturma geçişi', text: 'Hız spektrumu düşük frekansta yüksekten başlıyor ya da sinyalde yavaş kayma var: sensör yüzeye çarparak takılmış veya tam oturmadan ölçülmüş. Bu ölçümün hız ve crest factor değerleri güvenilmez — sensörü yerinde bırakıp birkaç saniye bekleyin ve tekrar ölçün.' });
   }
   if(st && st.carpet){
-    out.push({ level: st.defectEvidence ? 2 : 1, title:'Halı tipi taban — yağ filmi yok/yetersiz', short: st.defectEvidence ? 'Halı tipi taban + arıza bulgusu (ileri evre)' : 'Halı tipi taban: yağlama yetersiz olabilir',
+    const cv = !!st.carpet.vfd;
+    out.push({ level: cv ? 1 : (st.defectEvidence ? 2 : 1), title: cv ? 'Yüksek frekans tabanı yüksek — sürücü gürültüsü mü yağlama mı belirsiz' : 'Halı tipi taban — yağ filmi yok/yetersiz',
+      short: cv ? 'Yüksek frekans tabanı yüksek (sürücü gürültüsü olabilir)' : (st.defectEvidence ? 'Halı tipi taban + arıza bulgusu (ileri evre)' : 'Halı tipi taban: yağlama yetersiz olabilir'),
       text: bulletList(carpetBullets(st.carpet, st.defectEvidence)) });
+  }
+  if(st && st.vfd){
+    out.push({ level:0, title:`Sürücü (VFD) taşıyıcı gürültüsü — ≈${st.vfd.fc.toFixed(0)} Hz`, text: bulletList(vfdBullets(st.vfd)) });
   }
   if(x.twfV && x.ski){
     out.push({ level:0, title:'Zaman dalgası — crest factor / kurtosis', text:'Oturma geçişi olan ölçümde crest factor/kurtosis yorumlanmadı — ölçümü tekrarlayın.' });
@@ -5631,7 +5717,8 @@ function extraFindings(ax){
     if(x.twfV.level >= 1 && (zone === 'A' || zone === 'B')) items.push(`Genel hız seviyesi düşük (Zone ${zone}) olduğu hâlde darbe var: bu tür erken bulguyu hız RMS'i göstermez, crest factor tam bu durumda değerlidir.`);
     const tr = evaluateCfTrend(cfSeries(ax));
     if(tr) items.push(cfTrendText(ax, tr));
-    if(st && st.stage === 4 && x.twfV.level === 0) items.push('Not: ileri evrede darbeler sıklaşıp gürültüye karıştığı için crest factor yeniden düşer; bu, yukarıdaki Stage 4 tahminiyle çelişmez.');
+    if(st && st.vfd) items.push(`Not: bu bantta sürücü taşıyıcı gürültüsü baskın (%${Math.round(st.vfd.share*100)}); düzenli taşıyıcı dalgası crest factor/kurtosis'i bastırır, bu yüzden darbeler gizlenmiş olabilir. Bu eksende darbe kararı zarf spektrumundan verilmeli.`);
+    else if(st && st.stage === 4 && x.twfV.level === 0) items.push('Not: ileri evrede darbeler sıklaşıp gürültüye karıştığı için crest factor yeniden düşer; bu, yukarıdaki Stage 4 tahminiyle çelişmez.');
     const t = bulletList(items);
     const h = x.twf && x.twf.hp;
     const lvl = Math.max(x.twfV.level, tr ? (tr.kind === 'falling' ? 2 : 1) : 0);
@@ -7933,7 +8020,8 @@ function buildTwfPrintHtml(ax){
       ${row('Ham (tüm bant)', st.raw)}${row('Rulman darbe bandı (1–3 kHz)', st.hp)}
     </table>
     ${v ? `<div style="font-size:12px; margin-top:5px;">${v.text}</div>` : ''}
-    ${hasLive && liveCarpet(ax) ? `<div style="font-size:12px; margin-top:5px; padding:6px 8px; border:1px solid #e0a000; border-radius:4px; background:#fff8e6;"><b>Halı tipi taban — yağ filmi yok/yetersiz.</b><ul style="margin:4px 0 0; padding-left:18px;">${carpetBullets(liveCarpet(ax), stg && stg.defectEvidence).map(t=>'<li>'+t+'</li>').join('')}</ul></div>` : ''}
+    ${hasLive && liveCarpet(ax) ? `<div style="font-size:12px; margin-top:5px; padding:6px 8px; border:1px solid #e0a000; border-radius:4px; background:#fff8e6;"><b>${carpetTitle(liveCarpet(ax))}.</b><ul style="margin:4px 0 0; padding-left:18px;">${carpetBullets(liveCarpet(ax), stg && stg.defectEvidence).map(t=>'<li>'+t+'</li>').join('')}</ul></div>` : ''}
+    ${stg && stg.vfd ? `<div style="font-size:12px; margin-top:5px; padding:6px 8px; border:1px solid #ccc; border-radius:4px;"><b>Sürücü (VFD) taşıyıcı gürültüsü ≈${stg.vfd.fc.toFixed(0)} Hz.</b><ul style="margin:4px 0 0; padding-left:18px;">${vfdBullets(stg.vfd).map(t=>'<li>'+t+'</li>').join('')}</ul></div>` : ''}
     ${stg && stg.stage ? `<div style="font-size:12px; margin-top:5px; padding:6px 8px; border:1px solid #ccc; border-radius:4px;"><b>Tahmini rulman evresi: ${stg.label}.</b> ${stg.reasons.join(' ')} <b>${stg.action}</b>${stg.caveats.length ? '<br><span style="color:#777; font-size:11px;">' + stg.caveats.join(' ') + '</span>' : ''}</div>` : ''}
     <div style="font-size:10.5px; color:#888; margin-top:4px;">Crest factor = +PK / RMS. Rulman darbe bandında (1–3 kHz; mil kaynaklı titreşimler dışarıda kalır) sağlam rulmanda CF ≈ 3.5–4.5, kurtosis ≈ 3; darbe başlayınca CF 5–6 üstü. İleri evrede RMS artar ve CF yeniden düşer — trendle birlikte okunmalıdır.</div>
   </div>`;
@@ -8166,6 +8254,34 @@ function recentTrendText(ax, entries){
   const dir = Math.abs(pct) < 10 ? 'yaklaşık aynı' : (pct > 0 ? `+%${pct.toFixed(0)} arttı` : `%${Math.abs(pct).toFixed(0)} azaldı`);
   return `${ax}: ${v.map(x=>x.toFixed(2)).join(' → ')} mm/s (son ölçümde ${dir}${zoneChange})`;
 }
+// ---- Rapor başında eksen özeti: tahmini evre + rulman seviyesi + önemli notlar ----
+// Ayrıntılar eksen bölümlerinde; bu tablo okurun evre sonucunu sayfanın sonunda aramaması için.
+function buildStageSummaryPrintHtml(){
+  const hasLive = !!(axisSpectra.X || axisSpectra.Y || axisSpectra.Z);
+  if(!hasLive) return '';
+  const td = 'padding:6px; border:1px solid #ccc; font-size:12px; vertical-align:top;';
+  const LV = { 1:'Seviye 1 — belirti yok', 2:'Seviye 2 — zayıf şüphe', 3:'Seviye 3 — güçlü şüphe', 4:'Seviye 4 — yüksek şüphe' };
+  const SC = { 1:'#2e7d32', 2:'#b26a00', 3:'#c0392b', 4:'#c0392b' };
+  const rows = ['X','Y','Z'].filter(ax=>axisSpectra[ax]).map(ax=>{
+    const st = estimateStage(ax);
+    const br = liveBearingResult(ax);
+    const notes = [];
+    if(st && st.carpet) notes.push(carpetTitle(st.carpet));
+    if(st && st.vfd) notes.push(`Sürücü taşıyıcı gürültüsü ≈${st.vfd.fc.toFixed(0)} Hz (1–3 kHz göstergeleri kullanılmadı)`);
+    if(st && !st.stage) notes.push(st.reasons[0]);
+    return `<tr><td style="${td}"><b>${ax}</b></td>
+      <td style="${td}">${st && st.stage ? `<b style="color:${SC[st.stage]}">${st.label}</b><br><span style="font-size:11px">${st.action}</span>` : '—'}</td>
+      <td style="${td}">${br ? LV[br.level] || '—' : '—'}</td>
+      <td style="${td}">${notes.join('<br>') || '—'}</td></tr>`;
+  }).join('');
+  return `<h2 style="font-size:15px; margin:20px 0 8px;">Rulman Özeti</h2>
+    <table style="width:100%; border-collapse:collapse;">
+      <tr style="background:#eee;"><th style="${td} text-align:left;">Eksen</th><th style="${td} text-align:left;">Tahmini evre (tüm göstergeler)</th><th style="${td} text-align:left;">Rulman frekansı kanıtı</th><th style="${td} text-align:left;">Notlar</th></tr>
+      ${rows}
+    </table>
+    <div style="font-size:10.5px; color:#888; margin-top:4px;">"Rulman frekansı kanıtı" yalnızca BPFO/BPFI/BSF tepelerinin PSD ve zarfta görülüp görülmediğine bakar (Genel Değerlendirme'deki Seviye 1–4). "Tahmini evre" buna ek olarak zaman dalgası (crest factor/kurtosis), yüksek frekans tabanı, yan bantlar, kafes frekansı, ISO bölgesi ve trendi birleştirir; bu yüzden ikisi farklı çıkabilir. Gerekçeler her eksenin "Zaman Dalga Formu" bölümündedir.</div>`;
+}
+
 async function buildRecentComparisonHtml(){
   const entries = recentReportEntries();
   if(entries.length < 2) return `<h2 style="font-size:15px; margin:20px 0 8px;">Son Ölçümler</h2><div style="font-size:12px; color:#777;">Bu nokta için karşılaştırılacak önceki ölçüm yok.</div>`;
@@ -8349,7 +8465,7 @@ async function printReport(){
   btn.textContent = 'Grafikler hazırlanıyor…';
   try{
     const chartImages = await buildReportChartImages(getSpec, getEnvSpec, bearing.freqs, reportCtxFor(meta, bearing), bearing.markerFreqs);
-    meta.recentHtml = await buildRecentComparisonHtml();
+    meta.recentHtml = buildStageSummaryPrintHtml() + await buildRecentComparisonHtml();
     document.getElementById('printReport').innerHTML = buildPrintReportHtml(chartImages, meta, bearing);
     window.print();
   } finally {
@@ -8396,7 +8512,7 @@ async function exportHtmlReport(){
   btn.textContent = 'Hazırlanıyor…';
   try{
     const axesData = {};
-    meta.recentHtml = await buildRecentComparisonHtml();
+    meta.recentHtml = buildStageSummaryPrintHtml() + await buildRecentComparisonHtml();
     for(const ax of ['X','Y','Z']){
       const spec = getSpec(ax);
       if(!spec) continue;

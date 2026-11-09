@@ -55,7 +55,7 @@
 
   <div class="btns">
     <button class="primary" id="btnBoth" type="button" disabled>Motorda ölç: normal + yüksek<span class="btn-sub">sensör motor üzerindeyken — iki ölçüm arka arkaya</span></button>
-    <button id="btnNoise" type="button" disabled>Gürültü ölçümü (yüksek ayar)<span class="btn-sub">sensörü motordan alıp yumuşak bir yüzeye (bez, sünger) hareketsiz koyun — sensörün kendi gürültüsü</span></button>
+    <button id="btnNoise" type="button" disabled>Gürültü ölçümü (normal + yüksek)<span class="btn-sub">sensörü motordan alıp yumuşak bir yüzeye (bez, sünger) hareketsiz koyun — sensörün kendi gürültüsü, iki ayarda</span></button>
   </div>
 
   <div class="panel" id="resultPanel" style="display:none">
@@ -80,7 +80,7 @@
     <h2>Nasıl kullanılır</h2>
     <ul class="note">
       <li>Sensörü normal ölçüm noktasına koy (tercihen rulmanından şüphelendiğin bir motor), <b>Motorda ölç</b>'e bas. İki ölçüm yaklaşık 15 saniye sürer.</li>
-      <li>Ardından sensörü motordan alıp bir beze ya da süngere hareketsiz koy, <b>Gürültü ölçümü</b>'ne bas. Bu, 3–6 kHz'te "sinyal mi gürültü mü" sorusunun cevabı için referans olur.</li>
+      <li>Ardından sensörü motordan alıp bir beze ya da süngere hareketsiz koy, <b>Gürültü ölçümü</b>'ne bas (iki ayar arka arkaya, ~15 s). Bu, hem 1–3 kHz halı eşiği hem 3–6 kHz'te "sinyal mi gürültü mü" sorusunun cevabı için referans olur.</li>
       <li>Yüksek ayar sensöre yalnızca bu ölçüm için yazılır. Ana programda ya da Able Handy'de bir sonraki ölçüm normal ayarı yeniden yazar.</li>
     </ul>
   </div>
@@ -107,6 +107,7 @@ const CHAR_MAP = {
 const MODES = {
   normal: { label:'Normal (6.4 kHz, 2 s)', bytes:[0,1,4,0,0,50,0,0], fsDefault:6510, color:'#5ec8ff' },
   high:   { label:'Yüksek (12.8 kHz, 1 s)', bytes:[0,1,5,0,0,50,0,0], fsDefault:12800, color:'#ff5d5d' },
+  noiseN: { label:'Gürültü (normal ayar, sensör hareketsiz)', bytes:[0,1,4,0,0,50,0,0], fsDefault:6510, color:'#d7c26a' },
   noise:  { label:'Gürültü (yüksek ayar, sensör hareketsiz)', bytes:[0,1,5,0,0,50,0,0], fsDefault:12800, color:'#9aa59e' },
 };
 const SCALE_G_PER_LSB = 0.0006104;
@@ -290,8 +291,8 @@ function render(){
   $('dlPanel').style.display = 'block';
   drawChart();
   // tablo
-  const modes = ['normal','high','noise'].filter(m=>results[m]);
-  let h = '<tr><th>Bant ('+curAxis+')</th>' + modes.map(m=>`<th>${m==='normal'?'Normal':m==='high'?'Yüksek':'Gürültü'}<br><span style="font-weight:400">mg RMS · taban</span></th>`).join('') + '</tr>';
+  const modes = ['normal','high','noiseN','noise'].filter(m=>results[m]);
+  let h = '<tr><th>Bant ('+curAxis+')</th>' + modes.map(m=>`<th>${m==='normal'?'Normal':m==='high'?'Yüksek':m==='noiseN'?'Gürültü N':'Gürültü Y'}<br><span style="font-weight:400">mg RMS · taban</span></th>`).join('') + '</tr>';
   BANDS.forEach(([lo,hi,lbl])=>{
     h += `<tr><td>${lbl}</td>` + modes.map(m=>{
       const r = results[m], ps = r.psd[curAxis];
@@ -329,13 +330,18 @@ function verdictHtml(){
         : 'Sonuç: bu motorda 3 kHz üstü sensör gürültüsüne yakın. Başka bir motorda (özellikle rulmanı şüpheli olanda) da deneyin; hep böyleyse yüksek ayar bize bir şey kazandırmıyor.');
     }
   }
+  const nn = results.noiseN;
+  if(nn){
+    const fl = bandMedianDensity(nn.psd[ax],1000,3000);
+    out.push(`Sensör gürültü tabanı (normal ayar, 1–3 kHz, ${ax}): <b>${fl.toFixed(2)} mg/√Hz</b>. Ana programdaki halı eşiği 1.5 mg/√Hz; ${fl < 1.0 ? '<b class="ok">eşik gürültünün belirgin üstünde</b>' : fl < 1.5 ? '<b class="warn">eşik gürültüye yakın</b>' : '<b class="bad">gürültü eşiğin üstünde — eşik yükseltilmeli</b>'}.`);
+  }
   return out.length ? '<ul>' + out.map(t=>'<li>'+t+'</li>').join('') + '</ul>' : '';
 }
 function drawChart(){
   const cv = $('chart'), c = cv.getContext('2d'), W = cv.width, H = cv.height;
   const L = 70, R = 14, T = 14, B = 46;
   c.clearRect(0,0,W,H); c.font = '20px system-ui'; c.fillStyle = '#7c8a80'; c.strokeStyle = '#1f2a23';
-  const series = ['normal','high','noise'].filter(m=>results[m]).map(m=>({ m, ps: results[m].psd[curAxis], color: MODES[m].color }));
+  const series = ['normal','high','noiseN','noise'].filter(m=>results[m]).map(m=>({ m, ps: results[m].psd[curAxis], color: MODES[m].color }));
   let fMax = 0, yMin = Infinity, yMax = 0;
   series.forEach(s=>{ fMax = Math.max(fMax, s.ps.f[s.ps.f.length-1]); for(let k=2;k<s.ps.f.length;k++){ const v = Math.sqrt(s.ps.p[k])*1000; if(v>0){ yMin = Math.min(yMin, v); yMax = Math.max(yMax, v); } } });
   fMax = Math.ceil(fMax/500)*500;
@@ -354,7 +360,7 @@ function drawChart(){
 }
 function downloadCsv(){
   const lines = ['# WS300 yüksek frekans testi — ' + new Date().toLocaleString('tr-TR')];
-  ['normal','high','noise'].filter(m=>results[m]).forEach(m=>{
+  ['normal','high','noiseN','noise'].filter(m=>results[m]).forEach(m=>{
     const r = results[m];
     lines.push(`# mod=${m} fs=${r.fs} n=${r.axes.X.length} ayar=${MODES[m].bytes.join(' ')}`);
     lines.push('mod,i,X_g,Y_g,Z_g');
@@ -368,7 +374,7 @@ function downloadCsv(){
 
 $('btnConnect').onclick = connect;
 $('btnBoth').onclick = ()=> run(['normal','high']);
-$('btnNoise').onclick = ()=> run(['noise']);
+$('btnNoise').onclick = ()=> run(['noiseN','noise']);
 $('btnCsv').onclick = downloadCsv;
 document.querySelectorAll('#axisTabs button').forEach(b=> b.onclick = ()=>{
   curAxis = b.dataset.ax;

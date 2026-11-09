@@ -3,7 +3,7 @@
 // yapmak için basit bir "stale-while-revalidate" önbellekleme uygular.
 // Sadece kendi kaynağımızdaki (GitHub Pages) dosyaları önbellekler — Firebase/
 // Firestore gibi dış istekler servis worker'a hiç girmeden doğrudan ağa gider.
-const CACHE_NAME = 'ws300-pb-cache-v1';
+const CACHE_NAME = 'ws300-pb-cache-v2';
 const APP_SHELL = [
   './index.html',
   './manifest.json',
@@ -56,7 +56,7 @@ self.addEventListener('fetch', (event) => {
 
   if (isAppShellDoc) {
     event.respondWith(
-      fetch(req)
+      fetch(req, { cache: 'no-cache' })
         .then((res) => {
           if (res && res.status === 200) {
             const clone = res.clone();

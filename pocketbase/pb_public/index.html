@@ -1089,7 +1089,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     <button class="menu-btn" type="button" data-sub="log"><span class="mi">📝</span><span class="mt">Kayıt (Log)</span><span class="ms" id="menuSubLog">cihaz mesajları</span></button>
   </div>
 
-  <footer>testigotr.com.tr — WS300 saha aracı</footer>
+  <footer>testigotr.com.tr — WS300 saha aracı · sürüm <span id="appVersion"></span></footer>
 </div>
 </div><!-- /measHome -->
 
@@ -1286,6 +1286,9 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
 // ============================================================
 // WS300 BLE PROTOKOLÜ (APK decompile ile doğrulandı)
 // ============================================================
+// Uygulama/analiz sürümü — her değişiklikte artırılır; ana ekranda ve raporlarda görünür.
+const APP_VERSION = '2026-11-09.1';
+document.getElementById('appVersion').textContent = APP_VERSION;
 const BASE = "-5b49-42cb-9683-3a68b834786f";
 const SVC_CONFIG  = "90829500" + BASE;
 const CHR_CONFIG  = "90829501" + BASE;
@@ -3137,7 +3140,7 @@ function buildComparisonReportHtml(axesSeries, trend, summaryRows, bearing, char
 <body>
 <div class="wrap">
   <h1 style="font-size:20px; margin-bottom:4px;">WS300 Ölçüm Karşılaştırma Raporu</h1>
-  <div style="font-size:13px; color:#555; margin-bottom:4px;">Rapor tarihi: ${stamp}</div>
+  <div style="font-size:13px; color:#555; margin-bottom:4px;">Rapor tarihi: ${stamp} · Analiz sürümü: ${APP_VERSION}</div>
   ${buildReportHeaderTableHtml({rpm: summaryRows.length===1 ? (summaryRows[0].rpm||'—') : 'değişken (bkz. tablo)'})}
 
   <h2 style="font-size:15px; margin-bottom:8px;">Karşılaştırılan Ölçümler</h2>
@@ -8410,7 +8413,7 @@ function buildPrintReportHtml(chartImages, meta, bearing){
   }
   return `
     <h1 style="font-size:20px; margin-bottom:4px;">WS300 Titreşim Ölçüm Raporu</h1>
-    <div style="font-size:13px; color:#555; margin-bottom:4px;">Rapor tarihi: ${stamp}</div>
+    <div style="font-size:13px; color:#555; margin-bottom:4px;">Rapor tarihi: ${stamp} · Analiz sürümü: ${APP_VERSION}</div>
     ${meta.sourceNote ? `<div style="font-size:12px; color:#a15c00; margin-bottom:16px;">${meta.sourceNote}</div>` : `<div style="margin-bottom:16px;"></div>`}
 
     ${buildReportHeaderTableHtml(meta)}
@@ -8700,7 +8703,7 @@ function buildStandaloneReportHtml(axesData, meta, bearing, chartJsSource){
 <body>
 <div class="wrap">
   <h1 style="font-size:20px; margin-bottom:4px;">WS300 Titreşim Ölçüm Raporu</h1>
-  <div style="font-size:13px; color:#555; margin-bottom:4px;">Rapor tarihi: ${stamp}</div>
+  <div style="font-size:13px; color:#555; margin-bottom:4px;">Rapor tarihi: ${stamp} · Analiz sürümü: ${APP_VERSION}</div>
   ${meta.sourceNote ? `<div style="font-size:12px; color:#a15c00; margin-bottom:16px;">${meta.sourceNote}</div>` : `<div style="margin-bottom:16px;"></div>`}
 
   ${buildReportHeaderTableHtml(meta)}

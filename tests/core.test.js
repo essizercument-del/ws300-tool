@@ -29,7 +29,7 @@ for(const file of APP_FILES){
       'ISO_ZONES', 'isoClass', 'isoEvaluate', 'ISO_BASIS_TEXT', 'isoLowSpeedNote', 'velBandLow',
       'escapeHtml', 'findSeqGaps', 'ENV_SPEC_F_MAX',
       'Q_CLIP_LSB', 'Q_CLIP_MIN_COUNT', 'Q_FLAT_STD_LSB', 'Q_STUCK_RUN', 'Q_SPIKE_LSB', 'Q_LEN_MISMATCH',
-      'SKI_BLOCK_S', 'SKI_DRIFT_RATIO', 'SKI_DRIFT_MIN_G', 'SKI_BAND', 'SKI_VEL_RATIO', 'SKI_VEL_MIN', 'skiSlopeCheck',
+      'SKI_BLOCK_S', 'SKI_DRIFT_RATIO', 'SKI_DRIFT_MIN_G', 'SKI_BAND', 'SKI_VEL_RATIO', 'SKI_VEL_MIN', 'SKI_PEAK_HALF_HZ', 'SKI_PEAK_SHARE', 'skiSlopeCheck',
       'TWF_HP_HZ', 'TWF_EDGE_FRAC', 'TWF_MIN_RMS_G', 'CF_WARN', 'CF_HIGH', 'KURT_WARN', 'KURT_HIGH', 'biquadHighpass', 'biquadRun', 'highpassFiltFilt', 'twfStatsOf', 'computeTwfStats', 'twfVerdict', 'evaluateCfTrend',
       'ELEC_PEAK_GATE', 'ELEC_SHARE_MIN', 'localPeak', 'localFloor', 'electricalCheck', 'SB_GATE', 'sidebandCheck', 'CARPET_TREND', 'CARPET_SHAPE', 'CARPET_MIN_PSD', 'bandMedian', 'carpetCheck', 'VFD_COMB_SHARE', 'VFD_MIN_LINES', 'VFD_LINE_GATE', 'vfdCarrierCheck', 'velLineSpectrum', 'downsampleSpectrum', 'VEL_SPEC_MODE', 'fixDocVelSpectrum', 'SAMPLE_RATE_DEFAULT_HZ', 'VEL_F_LOW', 'twfSummaryOf', 'evaluateImpactTrend', 'SUB_ENERGY_SHARE', 'SUB_MIN_MMS', 'SUB_NARROW_HZ', 'subSyncCheck',
       'assessSignalQuality', 'medianOfNums', 'ENV_LINE_GATE', 'ENV_LINE_FLOOR_HZ', 'ENV_LINE_MAX_HALF_HZ', 'suppressDriveLines', 'envOptsFor', 'shaftScale', 'effectiveShaftHz', 'decodeRawBuffer', 'strongPsdMatches'],
@@ -431,6 +431,33 @@ for(const file of APP_FILES){
     const issues = api.assessSignalQuality();
     assert.ok(issues.some(q => q.startsWith('X: ski-slope')), issues.join(' | '));
     assert.ok(!issues.some(q => q.startsWith('Y:')), issues.join(' | '));
+  });
+
+  test(`${file}: ski-slope — sensör gürültüsü ve keskin alt-senkron tepe yanlış alarm vermiyor`, () => {
+    const g = rng(43);
+    const accRms = (f, v) => v / 1000 * 2 * Math.PI * f / G * Math.SQRT2; // mm/s RMS → g tepe
+    // Sakin makine: 1× 12.3 Hz + 2× ≈ 1.45 mm/s (10–1000 Hz)
+    const base = (t) => sine(12.3, accRms(12.3, 1.2))(t) + sine(24.6, accRms(24.6, 0.8))(t);
+    const lowVel = (x) => {
+      let m = 0; for(const v of x) m += v; m /= x.length;
+      const { freqs, psd } = api.computePSD(x.map(v => v - m), FS);
+      return api.velocitySpectrumFromAccelPSD(freqs, psd, 1.5, 5).rmsVelocity;
+    };
+    // 1.5–5 Hz geniş bantlı, hızda 0 Hz'e doğru yükselen içerik (rampa şekli)
+    const ph = rng(3);
+    const comps = []; for(let f = 1.5; f <= 5; f += 0.25) comps.push([f, 2 * Math.PI * Math.abs(ph())]);
+    const ramp0 = signal((t) => comps.reduce((a, [f, p]) => a + Math.sin(2 * Math.PI * f * t + p) / f, 0));
+    const r0 = lowVel(ramp0);
+    const ramp = (v) => ramp0.map(x => x * v / r0);
+    // Sahadaki durum: düşük bant ≈1.2 mm/s (sensör gürültüsü seviyesi) → uyarı yok
+    const n1 = ramp(1.2);
+    assert.equal(api.skiSlopeCheck(signal((t, k) => base(t) + 0.002 * g() + n1[k]), FS), null, 'gürültü seviyesindeki düşük bant');
+    // Kayış gibi keskin 3.2 Hz tepe (2.5 mm/s) → ski-slope değil
+    assert.equal(api.skiSlopeCheck(signal((t) => base(t) + 0.002 * g() + sine(3.2, accRms(3.2, 2.5))(t)), FS), null, 'keskin 3.2 Hz tepe');
+    // Gerçek, büyük rampa (4 mm/s) → frekans yolundan yakalanır
+    const n4 = ramp(4);
+    const r = api.skiSlopeCheck(signal((t, k) => base(t) + 0.002 * g() + n4[k]), FS);
+    assert.ok(r && (r.by === 'freq' || r.by === 'both'), 'büyük geniş bantlı rampa yakalanmalı');
   });
 
   test(`${file}: 2×LF elektrik tepesi ayrılıyor, mil harmoniğiyle karışmıyor`, () => {

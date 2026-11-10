@@ -819,7 +819,7 @@ db.enablePersistence({ synchronizeTabs: true }).catch(err=>{
 // WS300 BLE PROTOKOLÜ (APK decompile ile doğrulandı)
 // ============================================================
 // Uygulama/analiz sürümü — her değişiklikte artırılır; ana ekranda ve raporlarda görünür.
-const APP_VERSION = '2026-11-09.1';
+const APP_VERSION = '2026-11-10.1';
 document.getElementById('appVersion').textContent = APP_VERSION;
 const BASE = "-5b49-42cb-9683-3a68b834786f";
 const SVC_CONFIG  = "90829500" + BASE;
@@ -3980,7 +3980,9 @@ function assessSignalQuality(){
         const why = sk.by === 'freq'
           ? `1.5–5 Hz hız ${sk.lowVel.toFixed(2)} mm/s, 10–1000 Hz ${sk.bandVel.toFixed(2)} mm/s`
           : `sinyalde ${(sk.drift*1000).toFixed(0)} mg yavaş kayma`;
-        issues.push(`${ax}: ski-slope / oturma geçişi (${why}) — sensör yüzeye çarparak takılmış ya da tam oturmadan ölçülmüş; hız ve crest factor güvenilmez, birkaç saniye bekleyip ölçümü tekrarlayın`);
+        issues.push(sk.by === 'freq'
+          ? `${ax}: ski-slope şüphesi — düşük frekansta (1.5–5 Hz) geniş bantlı yükselme (${why}). Olası sebepler: sensör tam oturmamış/kablo-gövde hareketi, ya da yapıdan gelen gerçek bir düşük frekans titreşimi. Hız değeri şişmiş olabilir; şüpheliyseniz ölçümü tekrarlayın`
+          : `${ax}: ski-slope / oturma geçişi (${why}) — sinyalde yavaş kayma var: sensör yüzeye çarparak takılmış ya da tam oturmadan ölçülmüş olabilir; hız ve crest factor güvenilmez, birkaç saniye bekleyip ölçümü tekrarlayın`);
       }
     }
   }
@@ -4004,16 +4006,23 @@ function assessSignalQuality(){
 //  1) Zaman: sinyal 0.5 s'lik bloklara bölünür; blok ortalamalarının farkı
 //     (yavaş kayma) sinyalin kendi RMS'ine göre büyükse. 8 Hz ve üstü gerçek
 //     titreşim bir blokta ~4 periyot sürdüğü için ortalamayı neredeyse oynatmaz.
-//  2) Frekans: 1.5–5 Hz bandındaki hız RMS'i (ölçülen en düşük devir ~500 rpm =
-//     8.3 Hz'in altında, gerçek bir kaynağı beklenmez) 10–1000 Hz hız RMS'ine
-//     göre büyükse.
+//  2) Frekans: 1.5–5 Hz bandındaki hız RMS'i 10–1000 Hz hız RMS'ine göre
+//     büyükse. Bu yol tek başına yanlış alarma açık: ivme→hız çevriminde 1/f
+//     bölme, MEMS sensörün kendi düşük frekans gürültüsünü (≈1–2 mg) bu bantta
+//     ~1 mm/s'ye büyütür; sakin makinede (10–1000 Hz ≈1.5 mm/s) oran eşiği
+//     kolayca aşılır. Ayrıca kayış gibi gerçek alt-senkron kaynaklar bu bantta
+//     KESKİN bir tepe verir — ski-slope ise geniş bantlı bir rampadır. Bu yüzden
+//     frekans yolu yalnızca düşük bant mutlak olarak büyükse (SKI_VEL_MIN) ve
+//     enerji tek bir dar tepede toplanmamışsa tetiklenir.
 // ============================================================
 const SKI_BLOCK_S = 0.5;
 const SKI_DRIFT_RATIO = 0.5;     // blok ortalamaları farkı / sinyal RMS
 const SKI_DRIFT_MIN_G = 0.005;   // bunun altındaki kaymalar önemsiz
 const SKI_BAND = [1.5, 5];       // Hz
 const SKI_VEL_RATIO = 0.7;       // düşük bant hız RMS / 10–1000 Hz hız RMS
-const SKI_VEL_MIN = 0.5;         // mm/s — düşük bant bundan küçükse önemsiz
+const SKI_VEL_MIN = 2.0;         // mm/s — düşük bant bundan küçükse sensör gürültüsü seviyesinde, önemsiz
+const SKI_PEAK_HALF_HZ = 0.8;    // en yüksek noktanın ±bu kadarı "tepe penceresi"
+const SKI_PEAK_SHARE = 0.7;      // bant enerjisinin bu kadarı tepe penceresindeyse keskin tepe (ski-slope değil)
 
 function skiSlopeCheck(g, fs){
   if(!g || g.length < fs) return null;
@@ -4039,11 +4048,28 @@ function skiSlopeCheck(g, fs){
   const driftHit = drift >= SKI_DRIFT_MIN_G && rms > 0 && drift/rms >= SKI_DRIFT_RATIO;
   // 2) hız spektrumunda düşük frekans rampası
   const {freqs, psd} = computePSD(x, fs);
-  const low = velocitySpectrumFromAccelPSD(freqs, psd, SKI_BAND[0], SKI_BAND[1]).rmsVelocity;
+  const lowSp = velocitySpectrumFromAccelPSD(freqs, psd, SKI_BAND[0], SKI_BAND[1]);
+  const low = lowSp.rmsVelocity;
   const band = velocitySpectrumFromAccelPSD(freqs, psd, 10, 1000).rmsVelocity;
-  const velHit = low >= SKI_VEL_MIN && low >= SKI_VEL_RATIO*Math.max(band, 1e-9);
+  // Düşük bantta enerji tek bir dar tepede mi (gerçek kaynak) yoksa yayılmış mı (rampa)?
+  let kMax = -1, vMax = -1, tot = 0;
+  for(let k=0;k<freqs.length;k++){
+    const e = lowSp.velAmp[k]*lowSp.velAmp[k];
+    tot += e;
+    if(e > vMax){ vMax = e; kMax = k; }
+  }
+  let near = 0;
+  if(kMax >= 0) for(let k=0;k<freqs.length;k++){
+    if(Math.abs(freqs[k]-freqs[kMax]) <= SKI_PEAK_HALF_HZ) near += lowSp.velAmp[k]*lowSp.velAmp[k];
+  }
+  const peakShare = tot > 0 ? near/tot : 0;
+  // Rampa her zaman bandın alt kenarında en yüksektir; tepe bandın içindeyse
+  // (iki yanı da düşük) ve enerjinin çoğunu topluyorsa gerçek bir kaynak tepesidir.
+  const peakInside = kMax >= 0 && freqs[kMax] >= SKI_BAND[0] + SKI_PEAK_HALF_HZ;
+  const narrowPeak = peakInside && peakShare >= SKI_PEAK_SHARE;
+  const velHit = low >= SKI_VEL_MIN && low >= SKI_VEL_RATIO*Math.max(band, 1e-9) && !narrowPeak;
   if(!driftHit && !velHit) return null;
-  return { drift, driftRatio: rms > 0 ? drift/rms : 0, lowVel: low, bandVel: band, by: driftHit && velHit ? 'both' : (driftHit ? 'time' : 'freq') };
+  return { drift, driftRatio: rms > 0 ? drift/rms : 0, lowVel: low, bandVel: band, peakShare, by: driftHit && velHit ? 'both' : (driftHit ? 'time' : 'freq') };
 }
 
 // ============================================================
@@ -5327,7 +5353,7 @@ function extraFindings(ax){
         + (st.reasons.some(t=>t.includes('1–3 kHz')) ? '<br><span style="font-size:11px">Rulman darbe bandı (1–3 kHz): bilye hasarlı yüzeye çarptığında rulman bu aralıkta çınlar; mil kaynaklı büyük titreşimler (1×, 2×…) bu bandın altında kaldığı için darbeler burada net görünür. Arıza frekanslarının kendisi (ör. BPFO ≈75 Hz) yine düşük frekanstadır.</span>' : '') });
   }
   if(x.ski){
-    out.push({ level:2, title:'Ski-slope / oturma geçişi', text: 'Hız spektrumu düşük frekansta yüksekten başlıyor ya da sinyalde yavaş kayma var: sensör yüzeye çarparak takılmış veya tam oturmadan ölçülmüş. Bu ölçümün hız ve crest factor değerleri güvenilmez — sensörü yerinde bırakıp birkaç saniye bekleyin ve tekrar ölçün.' });
+    out.push({ level:2, title:'Ski-slope / oturma geçişi', text: 'Hız spektrumu düşük frekansta (1.5–5 Hz) geniş bantlı olarak yüksekten başlıyor ya da sinyalde yavaş kayma var. En sık sebep sensörün yüzeye çarparak takılması veya tam oturmadan ölçülmesidir; yapıdan gelen gerçek bir düşük frekans hareketi de olabilir. Bu ölçümün hız ve crest factor değerleri güvenilmez — sensörü yerinde bırakıp birkaç saniye bekleyin ve tekrar ölçün.' });
   }
   if(st && st.carpet){
     const cv = !!st.carpet.vfd;

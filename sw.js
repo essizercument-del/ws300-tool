@@ -4,7 +4,7 @@
 // Kendi kaynağımızdaki (GitHub Pages) dosyaları ve index.html'in yüklediği Firebase
 // kütüphanelerini önbellekler. Firestore/Auth API istekleri servis worker'a hiç
 // girmeden doğrudan ağa gider (çevrimdışı verileri Firestore'un kendi önbelleği tutar).
-const CACHE_NAME = 'ws300-cache-v6';
+const CACHE_NAME = 'ws300-cache-v7';
 const APP_SHELL = [
   './index.html',
   './manifest.json',
